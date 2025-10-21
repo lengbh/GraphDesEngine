@@ -40,13 +40,19 @@ class LabelledGraph:
     def __init__(self, name: str, graph_json: dict):
         self.name: str = name
         self.vertices: dict[int, Vertex] = {}
-        self.arcs: list[Arc] = []
+        self.arcs: dict[tuple[int, int], Arc] = {}
         for vertex_json in graph_json["vertices"]:
             vertex = Vertex(vertex_json)
             self.vertices[vertex.id] = vertex
         for arc_json in graph_json["arcs"]:
             arc = Arc(arc_json)
-            self.arcs.append(arc)
+            self.arcs[arc.tail, arc.head] = arc
+
+    def get_vertex(self, vertex_id: int) -> Vertex:
+        return self.vertices[vertex_id]
+
+    def get_arc(self, tail: int, head: int) -> Arc:
+        return self.arcs[tail, head]
 
     def __str__(self):
         vertices_str = "\n".join(str(v) for v in self.vertices.values())

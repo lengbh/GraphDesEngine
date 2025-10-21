@@ -50,4 +50,4 @@ class RandomFactory:
             scale = distribution_json["parameters"][1]
             return lambda: rng.weibull(shape) * scale
 
-        return lambda: 0.0
+        raise ValueError("Unknown/unsupported distribution type")

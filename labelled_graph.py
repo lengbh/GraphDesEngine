@@ -12,7 +12,7 @@ class Vertex:
         self.service_distribution_type: str = vertex_json["service_time_distribution"]["type"]
         self.service_distribution_params: list[float] = vertex_json["service_time_distribution"]["parameters"]
         self.service: Callable[[], float] \
-            = RandomFactory.get_random_generator_from_json(vertex_json["service_time_distribution"])
+            = RandomFactory.get_random_generator(self.service_distribution_type, self.service_distribution_params)
 
     def __str__(self):
         return ((f"Vertex {self.id}: name={self.name}, buffer_capacity={self.buffer_capacity}, \n"
@@ -26,7 +26,7 @@ class Arc:
         self.transfer_time_distribution_type: str = arc_json["transfer_time_distribution"]["type"]
         self.transfer_time_distribution_params: list[float] = arc_json["transfer_time_distribution"]["parameters"]
         self.transfer: Callable[[], float] \
-            = RandomFactory.get_random_generator_from_json(arc_json["transfer_time_distribution"])
+            = RandomFactory.get_random_generator(self.transfer_time_distribution_type, self.transfer_time_distribution_params)
 
     def __str__(self):
         return ((f"Arc from {self.tail} to {self.head}, \n"
@@ -53,6 +53,9 @@ class LabelledGraph:
 
     def get_arc(self, tail: int, head: int) -> Arc:
         return self.arcs[tail, head]
+
+    def search_arcs(self, tail: int) -> list[Arc]:
+        return [self.arcs[key] for key in self.arcs.keys() if key[0] == tail]
 
     def __str__(self):
         vertices_str = "\n".join(str(v) for v in self.vertices.values())

@@ -3,51 +3,55 @@ from typing import Callable
 import time
 
 
+def safe_time(t: float) -> float:
+    if not np.isfinite(t):
+        return 0.0
+    return max(0.0, float(t))
+
 class RandomFactory:
     @staticmethod
-    def get_random_generator_from_json(distribution_json: dict, seed: int = None) -> Callable[[], float]:
+    def get_random_generator(time_distribution_type: str, time_distribution_params: list[float], seed: int = None) -> Callable[[], float]:
+        # TODO static seed if no input
         seed_used = seed if seed is not None else time.time_ns()
         rng = np.random.default_rng(seed_used)
 
-        if distribution_json["type"] == "uniform":
-            if len(distribution_json["parameters"]) != 2:
+        dtype = str(time_distribution_type).lower()
+        params = list(time_distribution_params)
+
+        if dtype == "uniform":
+            if len(params) != 2:
                 raise ValueError("Uniform distribution requires exactly 2 parameters: low and high")
-            low = distribution_json["parameters"][0]
-            high = distribution_json["parameters"][1]
-            return lambda: rng.uniform(low, high)
+            low, high = params
+            return lambda: safe_time(rng.uniform(low, high))
 
-        if distribution_json["type"] == "normal":
-            if len(distribution_json["parameters"]) != 2:
+        if dtype == "normal":
+            if len(params) != 2:
                 raise ValueError("Normal distribution requires exactly 2 parameters: mean and stddev")
-            mean = distribution_json["parameters"][0]
-            stddev = distribution_json["parameters"][1]
-            return lambda: rng.normal(mean, stddev)
+            mean, stddev = params
+            return lambda: safe_time(rng.normal(mean, stddev))
 
-        if distribution_json["type"] == "constant":
-            if len(distribution_json["parameters"]) != 1:
+        if dtype == "constant":
+            if len(params) != 1:
                 raise ValueError("Constant distribution requires exactly 1 parameter: value")
-            value = distribution_json["parameters"][0]
-            return lambda: value
+            (value,) = params
+            return lambda: safe_time(float(value))
 
-        if distribution_json["type"] == "exponential":
-            if len(distribution_json["parameters"]) != 1:
+        if dtype == "exponential":
+            if len(params) != 1:
                 raise ValueError("Exponential distribution requires exactly 1 parameter: mean")
-            mean = distribution_json["parameters"][0]
-            return lambda: rng.exponential(mean)
+            (mean,) = params
+            return lambda: safe_time(rng.exponential(mean))
 
-        if distribution_json["type"] == "triangular":
-            if len(distribution_json["parameters"]) != 3:
+        if dtype == "triangular":
+            if len(params) != 3:
                 raise ValueError("Triangular distribution requires exactly 3 parameters: left, right, mode")
-            left = distribution_json["parameters"][0]
-            right = distribution_json["parameters"][1]
-            mode = distribution_json["parameters"][2]
-            return lambda: rng.triangular(left, mode, right)
+            left, right, mode = params[0], params[1], params[2]
+            return lambda: safe_time(rng.triangular(left, mode, right))
 
-        if distribution_json["type"] == "weibull":
-            if len(distribution_json["parameters"]) != 2:
+        if dtype == "weibull":
+            if len(params) != 2:
                 raise ValueError("Weibull distribution requires exactly 2 parameter: shape, scale")
-            shape = distribution_json["parameters"][0]
-            scale = distribution_json["parameters"][1]
-            return lambda: rng.weibull(shape) * scale
+            shape, scale = params
+            return lambda: safe_time(rng.weibull(shape) * scale)
 
-        raise ValueError("Unknown/unsupported distribution type")
+        raise ValueError(f"Unknown/unsupported distribution type: {time_distribution_type}")

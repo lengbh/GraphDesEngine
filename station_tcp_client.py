@@ -59,7 +59,7 @@ class StationTCPClient(TCPClient):
         msg = qry.pack()
         self.send_msg(msg)
 
-    def request_action(self, workstation_id: int, tray_id: int) -> tuple[int, int] | tuple[None, None]:
+    def request_action(self, workstation_id: int, tray_id: int) -> tuple[int, int, int] | tuple[None, None, None]:
         """Send StationActionQuery and synchronously wait for StationActionRsp.
         Returns (action_type, next_station_id), or (None, None) on timeout/error.
         Note: This blocks the calling thread until a response arrives or timeout.
@@ -67,7 +67,7 @@ class StationTCPClient(TCPClient):
         try:
             self.send_station_action_query(tray_id, workstation_id)
         except Exception:
-            return None, None
+            return None, None, None
 
         def _pred(msg: TCPMsg) -> bool:
             try:
@@ -81,12 +81,12 @@ class StationTCPClient(TCPClient):
 
         m = self.wait_for_message(timeout=self.timeout, predicate=_pred)
         if m is None:
-            return None, None
+            return None, None, None
         try:
             rsp = StationActionRsp.unpack(bytes(m.body))
-            return int(rsp.action_type), int(rsp.next_station_id)
+            return int(rsp.order_id), int(rsp.action_type), int(rsp.next_station_id)
         except Exception:
-            return None, None
+            return None, None, None
 
     def request_action_async(self, workstation_id: int, tray_id: int) -> SimEvent:
         """Non-blocking version: returns a SimPy Event that will be resolved with action_type (int) or None."""
@@ -103,7 +103,7 @@ class StationTCPClient(TCPClient):
                 ev.succeed(None)
         return ev
 
-    def request_routing(self, workstation_id: int, tray_id: int) -> tuple[int, int] | tuple[None, None]:
+    def request_routing(self, workstation_id: int, tray_id: int) -> tuple[int, int, int] | tuple[None, None, None]:
         """Send StationActionDoneQuery and synchronously wait for StationActionRsp.
         Returns (action_type, next_station_id) or (None, None) on timeout/error.
         Note: This blocks the calling thread until a response arrives or timeout.
@@ -111,7 +111,7 @@ class StationTCPClient(TCPClient):
         try:
             self.send_station_action_done_qry(tray_id, workstation_id)
         except Exception:
-            return None, None
+            return None, None, None
 
         def _pred(msg: TCPMsg) -> bool:
             try:
@@ -125,12 +125,12 @@ class StationTCPClient(TCPClient):
 
         m = self.wait_for_message(timeout=self.timeout, predicate=_pred)
         if m is None:
-            return None, None
+            return None, None, None
         try:
             rsp = StationActionRsp.unpack(bytes(m.body))
-            return int(rsp.action_type), int(rsp.next_station_id)
+            return int(rsp.order_id), int(rsp.action_type), int(rsp.next_station_id)
         except Exception:
-            return None, None
+            return None, None, None
 
     def request_routing_async(self, workstation_id: int, tray_id: int) -> SimEvent:
         """Non-blocking version: returns a SimPy Event that will be resolved with next_station (int) or None."""

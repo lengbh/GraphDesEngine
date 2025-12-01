@@ -1,0 +1,88 @@
+{
+  "vertices": [
+    {
+      "id": 1,
+      "name": "Material Rack",
+      "buffer_capacity": 4,
+      "service_time_distribution": { "type": "normal", "parameters": [41.00325000286102, 0.0009573577141595083] }
+    },
+    {
+      "id": 2,
+      "name": "Pneumatic Material Dropper",
+      "buffer_capacity": 1,
+      "service_time_distribution": { "type": "normal", "parameters": [0.7020000219345093, 0.0016329721406171528] }
+    },
+    {
+      "id": 3,
+      "name": "Pneumatic Screwdriver",
+      "buffer_capacity": 1,
+      "service_time_distribution": { "type": "normal", "parameters": [19.201749980449677, 0.0018930106814280569] }
+    },
+    {
+      "id": 4,
+      "name": "Pneumatic Material Flipper",
+      "buffer_capacity": 1,
+      "service_time_distribution": { "type": "normal", "parameters": [7.901500046253204, 0.0005773772569959247] }
+    },
+    {
+      "id": 5,
+      "name": "Coordinated Robots",
+      "buffer_capacity": 1,
+      "service_time_distribution": { "type": "normal", "parameters": [50.40074998140335, 0.0027538093428420576] }
+    },
+    {
+      "id": 6,
+      "name": "Visual Assembly Robot",
+      "buffer_capacity": 1,
+      "service_time_distribution": { "type": "normal", "parameters": [61.89299988746643, 0.0] }
+    },
+    {
+      "id": 7,
+      "name": "Visual Assembly Robot",
+      "buffer_capacity": 1,
+      "service_time_distribution": { "type": "normal", "parameters": [61.901000022888184, 0.0] }
+    }
+  ],
+  "arcs": [
+    {
+      "tail": 1,
+      "head": 2,
+      "transfer_time_distribution": { "type": "normal", "parameters": [26.798500061035156, 0.6482142585986608] }
+    },
+    {
+      "tail": 2,
+      "head": 3,
+      "transfer_time_distribution": { "type": "normal", "parameters": [15.922249972820282, 0.22227216494701676] }
+    },
+    {
+      "tail": 3,
+      "head": 4,
+      "transfer_time_distribution": { "type": "normal", "parameters": [36.20600003004074, 1.54896704278047] }
+    },
+    {
+      "tail": 4,
+      "head": 5,
+      "transfer_time_distribution": { "type": "normal", "parameters": [26.650249898433685, 13.471668995511486] }
+    },
+    {
+      "tail": 5,
+      "head": 6,
+      "transfer_time_distribution": { "type": "normal", "parameters": [35.99550008773804, 1.665236483181311] }
+    },
+    {
+      "tail": 5,
+      "head": 7,
+      "transfer_time_distribution": { "type": "normal", "parameters": [63.59299993515015, 0.0] }
+    },
+    {
+      "tail": 6,
+      "head": 1,
+      "transfer_time_distribution": { "type": "normal", "parameters": [77.330, 6.441] }
+    },
+    {
+      "tail": 7,
+      "head": 1,
+      "transfer_time_distribution": { "type": "normal", "parameters": [33.231, 3.105] }
+    }
+  ]
+}

@@ -1,24 +1,22 @@
 import simpy
 from typing import Callable
 from dataclasses import dataclass
+import json
 import csv
 import os
 from station_tcp_client import StationTCPClient
 from simpy.resources.store import StorePut
 from labelled_graph import Vertex, Arc, LabelledGraph
+from random_util import RandomFactory
 
-
-# CSV logging configuration
-CSV_FILE = 'events.csv'
+GRAPH_MODEL_FILE = 'SystemGraphs/two_station_circular_system_graph.json'
+OUT_LOG_CSV_FILE = 'EventLogs/event_logs.csv'
 CSV_FIELDS = [
-    't',
-    'type',
+    'time',
+    'station_id',
     'tray_id',
-    'vertex_id',
-    'tail',
-    'head',
-    'service_time',
-    'transfer_time',
+    'workpiece_id',
+    'activity',
 ]
 
 
@@ -32,10 +30,10 @@ class Workpiece:
 @dataclass
 class Tray:
     id: int
-    current_workpiece_id: int
+    current_workpiece_id: int = 0xFFFFFFFF
 
 
-class NodeRuntime:
+class VertexRuntime:
     def __init__(self,
                  env: simpy.Environment,
                  vertex: Vertex,
@@ -64,9 +62,10 @@ class NodeRuntime:
         while True:
             tray = yield self.buffer.get()  # TODO fetch time
             self.emit_event({'type': 'dequeued', 't': self.env.now,
-                             'vertex_id': self.vertex.id, 'tray_id': tray.id})
+                             'vertex_id': self.vertex.id, 'tray_id': tray.id, 'workpiece_id': tray.current_workpiece_id})
 
-            action, next_v = self.request_action(self.vertex.id, tray.id)
+            order_id, action, next_v = self.request_action(self.vertex.id, tray.id)
+            tray.current_workpiece_id = order_id
 
             ## TODO no error and exception handling for now
 
@@ -80,12 +79,13 @@ class NodeRuntime:
                     yield req
                     service_time = self.vertex.service()
                     self.emit_event({'type': 'service_start', 't': self.env.now, 'vertex_id': self.vertex.id,
-                                     'tray_id': tray.id, 'service_time': service_time})
+                                     'tray_id': tray.id, 'workpiece_id': tray.current_workpiece_id, 'service_time': service_time})
                     yield self.env.timeout(service_time)
                     self.emit_event({'type': 'service_end', 't': self.env.now,
-                                     'vertex_id': self.vertex.id, 'tray_id': tray.id})
+                                     'vertex_id': self.vertex.id, 'tray_id': tray.id, 'workpiece_id': tray.current_workpiece_id})
 
-                    action, next_v = self.request_next_vertex(self.vertex.id, tray.id)
+                    order_id, action, next_v = self.request_next_vertex(self.vertex.id, tray.id)
+                    tray.current_workpiece_id = order_id
                     assert action == 0
                     arc_to_next_vertex = self.get_arc_to_next_vertex(self.vertex.id, next_v)
                     transfer_time = arc_to_next_vertex.transfer()
@@ -93,10 +93,10 @@ class NodeRuntime:
 
     def _transfer_process(self, next_vertex: int, tray: Tray, transfer_time: float):
         # Emit start immediately in this process, then wait transfer time and enqueue
-        self.emit_event({'type': 'transfer_start', 't': self.env.now, 'tray_id': tray.id,
+        self.emit_event({'type': 'transfer_start', 't': self.env.now, 'tray_id': tray.id, 'workpiece_id': tray.current_workpiece_id,
                          'tail': self.vertex.id, 'head': next_vertex, 'transfer_time': transfer_time})
         yield self.env.timeout(transfer_time)
-        self.emit_event({'type': 'transfer_end', 't': self.env.now, 'tray_id': tray.id,
+        self.emit_event({'type': 'transfer_end', 't': self.env.now, 'tray_id': tray.id, 'workpiece_id': tray.current_workpiece_id,
                          'tail': self.vertex.id, 'head': next_vertex})
         # Enqueue to next vertex; don't block on the put event here
         self.transfer_to_next_vertex(next_vertex, tray)
@@ -106,32 +106,32 @@ class GraphSimulation:
     def __init__(self, graph: LabelledGraph, env: simpy.Environment, mes_control_mode: bool):
         self.graph = graph
         self.env = env
-        self.nodes: dict[int, NodeRuntime] = {}
+        self.vertices: dict[int, VertexRuntime] = {}
         # TODO add listener functions
         # self._listeners: list[Callable[[dict], None]] = []
         self._next_tray_id = 1
         self._trays: dict[int, Tray] = {}
         self._completed: list[int] = []
 
-        # Instantiate nodes for simulation
+        # Instantiate vertices for simulation
         if mes_control_mode:
             self._clients: dict[int, StationTCPClient] = {}
             for vertex in self.graph.vertices.values():
                 # TODO configure server host
-                client = StationTCPClient(env=self.env, host='localhost', port=6789, timeout=3)
+                client = StationTCPClient(env=self.env, host='localhost', port=6789, timeout=60)
                 self._clients[vertex.id] = client
-                self.nodes[vertex.id] = NodeRuntime(self.env, vertex,
-                                                    get_arc_to_next_vertex=self.graph.get_arc,
-                                                    transfer_to_next_vertex=self.transfer_to_next_vertex,
-                                                    emit_event=self._emit,
-                                                    client=client)
+                self.vertices[vertex.id] = VertexRuntime(self.env, vertex,
+                                                         get_arc_to_next_vertex=self.graph.get_arc,
+                                                         transfer_to_next_vertex=self.transfer_to_next_vertex,
+                                                         emit_event=self._emit,
+                                                         client=client)
         else:
             for vertex in self.graph.vertices.values():
-                self.nodes[vertex.id] = NodeRuntime(self.env, vertex,
-                                                    get_arc_to_next_vertex=self.graph.get_arc,
-                                                    transfer_to_next_vertex=self.transfer_to_next_vertex,
-                                                    emit_event=self._emit,
-                                                    client=None)
+                self.vertices[vertex.id] = VertexRuntime(self.env, vertex,
+                                                         get_arc_to_next_vertex=self.graph.get_arc,
+                                                         transfer_to_next_vertex=self.transfer_to_next_vertex,
+                                                         emit_event=self._emit,
+                                                         client=None)
 
         self.env.process(self._completion_monitor())
 
@@ -150,15 +150,15 @@ class GraphSimulation:
         def _spawn():
             if at > 0:
                 yield self.env.timeout(at)
-            node = self.nodes.get(spawn_vertex_id)
-            if node is None:
+            vertex = self.vertices.get(spawn_vertex_id)
+            if vertex is None:
                 tray.completed_at = self.env.now
                 self._completed.append(tray_id)
                 self._emit({'type': 'tray_completed', 't': self.env.now, 'vertex_id': spawn_vertex_id,
-                            'tray_id': tray_id})
+                            'tray_id': tray_id, 'workpiece_id': tray.current_workpiece_id})
                 return
 
-            self._emit({'type': 'injected', 'vertex_id': spawn_vertex_id, 'tray_id': tray_id})
+            self._emit({'type': 'injected', 'vertex_id': spawn_vertex_id, 'tray_id': tray_id, 'workpiece_id': tray.current_workpiece_id})
             # Add to buffer
             yield self.transfer_to_next_vertex(spawn_vertex_id, tray)
 
@@ -166,12 +166,12 @@ class GraphSimulation:
         return tray_id
 
     def transfer_to_next_vertex(self, vertex_id: int, tray: Tray) -> StorePut:
-        node = self.nodes.get(vertex_id)
-        ev = node.buffer.put(tray)
+        vertex = self.vertices.get(vertex_id)
+        ev = vertex.buffer.put(tray)
 
         def _after_put():
             yield ev
-            self._emit({'type': 'enqueued', 't': self.env.now, 'vertex_id': vertex_id, 'tray_id': tray.id})
+            self._emit({'type': 'enqueued', 't': self.env.now, 'vertex_id': vertex_id, 'tray_id': tray.id, 'workpiece_id': tray.current_workpiece_id})
 
         self.env.process(_after_put())
         return ev
@@ -179,12 +179,18 @@ class GraphSimulation:
     @staticmethod
     def _emit(event: dict):
         try:
-            # TODO format the event log
             print(event)
-            file_exists = os.path.exists(CSV_FILE)
-            write_header = not file_exists or os.path.getsize(CSV_FILE) == 0
-            row = {k: event.get(k, "") for k in CSV_FIELDS}
-            with open(CSV_FILE, mode='a', newline='', encoding='utf-8') as f:
+            file_exists = os.path.exists(OUT_LOG_CSV_FILE)
+            write_header = not file_exists or os.path.getsize(OUT_LOG_CSV_FILE) == 0
+            # row = {k: event.get(k, "") for k in CSV_FIELDS}
+            row = {
+                'time': event.get('t', ""),
+                'station_id': 'S' + str(event.get('vertex_id', "") if event.get('vertex_id', "") is not None else event.get('tail', "")),
+                'tray_id': 'T' + str(event.get('tray_id', "")),
+                'workpiece_id': 'P' + str(event.get('workpiece_id', "")),
+                'activity': event.get('type', ""),
+            }
+            with open(OUT_LOG_CSV_FILE, mode='a', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
                 if write_header:
                     writer.writeheader()
@@ -195,23 +201,26 @@ class GraphSimulation:
             except Exception:
                 pass
 
-    def run(self, until: float):
+    def run(self, until: float | None):
         self.env.run(until=until)
 
 
 if __name__ == '__main__':
-    import json
-    from labelled_graph import GRAPH_MODEL_EXAMPLE_FILE
+    RandomFactory.set_seed(1762904783269162000)
 
-    with open(GRAPH_MODEL_EXAMPLE_FILE, 'r') as f:
+    with open(GRAPH_MODEL_FILE, 'r') as f:
         graph_json = json.load(f)
-    g = LabelledGraph('Example Graph', graph_json)
+    g = LabelledGraph('System Graph', graph_json)
 
-    env = simpy.RealtimeEnvironment(factor=0.1, strict=False)
+    if os.path.exists(OUT_LOG_CSV_FILE):
+        os.remove(OUT_LOG_CSV_FILE)
+
+    # env = simpy.RealtimeEnvironment(factor=0.1, strict=False)
+    env = simpy.Environment()
     sim = GraphSimulation(g, env=env, mes_control_mode=True)
 
     sim.inject_tray(spawn_vertex_id=1, at=0.0)
     sim.inject_tray(spawn_vertex_id=1, at=0.0)
     sim.inject_tray(spawn_vertex_id=1, at=0.0)
 
-    sim.run(until=100)
+    sim.run(until=1000)

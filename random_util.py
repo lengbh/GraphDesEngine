@@ -8,13 +8,43 @@ def safe_time(t: float) -> float:
         return 0.0
     return max(0.0, float(t))
 
-class RandomFactory:
-    @staticmethod
-    def get_random_generator(time_distribution_type: str, time_distribution_params: list[float], seed: int = None) -> Callable[[], float]:
-        # TODO static seed if no input
-        seed_used = seed if seed is not None else time.time_ns()
-        rng = np.random.default_rng(seed_used)
 
+class RandomFactory:
+    _seed: int | None = None
+    _rng: np.random.Generator | None = None
+
+    @classmethod
+    def set_seed(cls, seed: int) -> None:
+        cls._seed = int(seed)
+        cls._rng = np.random.default_rng(cls._seed)
+        try:
+            print(f"Random seed used in this simulation run: {cls._seed}")
+        except Exception:
+            pass
+
+    @classmethod
+    def get_seed(cls) -> int:
+        if cls._seed is None:
+            cls._seed = time.time_ns()
+            cls._rng = np.random.default_rng(cls._seed)
+            try:
+                print(f"Loaded random seed for this simulation run: {cls._seed}")
+            except Exception:
+                pass
+        return cls._seed
+
+    @classmethod
+    def _get_rng(cls, seed: int | None = None) -> np.random.Generator:
+        if cls._rng is None:
+            if seed is not None:
+                cls.set_seed(seed)
+            else:
+                cls.get_seed()
+        return cls._rng  # type: ignore[return-value]
+
+    @classmethod
+    def get_random_generator(cls, time_distribution_type: str, time_distribution_params: list[float], seed: int | None = None) -> Callable[[], float]:
+        rng = cls._get_rng(seed)
         dtype = str(time_distribution_type).lower()
         params = list(time_distribution_params)
 

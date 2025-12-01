@@ -17,6 +17,7 @@ typedef struct
 typedef struct
 {
     ST_StationActionQuery qry;
+    uint32_t    order_id;
     uint32_t    action_type; // 0 for release and read next_station_id, 1 for execute and ignore next_station_id
     uint32_t    next_station_id;
 } ST_StationActionRsp;
@@ -93,10 +94,12 @@ class StationActionDoneQuery:
 @dataclass(frozen=True)
 class StationActionRsp:
     qry: StationActionQuery
+    order_id: int
     action_type: int
     next_station_id: int
 
-    FMT: ClassVar[str] = '<IIII'
+    # Layout: workstation_id, tray_id, order_id, action_type, next_station_id
+    FMT: ClassVar[str] = '<IIIII'
     SIZE: ClassVar[int] = struct.calcsize(FMT)
 
     def pack(self, msg_type: int = MSG_STATION_ACTION_RSP) -> TCPMsg:
@@ -104,6 +107,7 @@ class StationActionRsp:
             self.FMT,
             self.qry.workstation_id & 0xFFFFFFFF,
             self.qry.tray_id & 0xFFFFFFFF,
+            self.order_id & 0xFFFFFFFF,
             self.action_type & 0xFFFFFFFF,
             self.next_station_id & 0xFFFFFFFF,
         )
@@ -111,5 +115,5 @@ class StationActionRsp:
 
     @staticmethod
     def unpack(b: bytes) -> 'StationActionRsp':
-        workstation_id, tray_id, action_type, next_station_id = struct.unpack(StationActionRsp.FMT, b[:StationActionRsp.SIZE])
-        return StationActionRsp(StationActionQuery(workstation_id, tray_id), action_type, next_station_id)
+        workstation_id, tray_id, order_id, action_type, next_station_id = struct.unpack(StationActionRsp.FMT, b[:StationActionRsp.SIZE])
+        return StationActionRsp(StationActionQuery(workstation_id, tray_id), order_id, action_type, next_station_id)

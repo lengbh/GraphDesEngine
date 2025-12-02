@@ -217,7 +217,7 @@ if __name__ == '__main__':
 
     # env = simpy.RealtimeEnvironment(factor=0.1, strict=False)
     env = simpy.Environment()
-    sim = GraphSimulation(g, env=env, mes_control_mode=True)
+    sim = GraphSimulation(g, env=env, mes_control_mode=False)
 
     sim.inject_tray(spawn_vertex_id=1, at=0.0)
     sim.inject_tray(spawn_vertex_id=1, at=0.0)

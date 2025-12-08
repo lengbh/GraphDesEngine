@@ -4,13 +4,16 @@ from dataclasses import dataclass
 import json
 import csv
 import os
+import time
+import argparse
 from station_tcp_client import StationTCPClient
 from simpy.resources.store import StorePut
 from labelled_graph import Vertex, Arc, LabelledGraph
 from random_util import RandomFactory
 
-GRAPH_MODEL_FILE = 'SystemGraphs/two_station_circular_system_graph.json'
-OUT_LOG_CSV_FILE = 'EventLogs/event_logs.csv'
+DEFAULT_GRAPH_MODEL_FILE = 'SystemGraphs/two_station_circular_system_graph.json'
+DEFAULT_OUT_LOG_CSV_FILE = 'EventLogs/event_logs.csv'
+
 CSV_FIELDS = [
     'time',
     'station_id',
@@ -45,8 +48,8 @@ class VertexRuntime:
         self.vertex = vertex
         if client is None:
             # TODO replace with routing probabilities
-            self.request_action = lambda _, __: (1, 0)
-            self.request_next_vertex = lambda current_vertex, __: (0, (2 if current_vertex == 1 else 1))
+            self.request_action = lambda _, __: (0, 1, 0)
+            self.request_next_vertex = lambda current_vertex, __: (0, 0, (2 if current_vertex == 1 else 1))
         else:
             self.request_action = client.request_action
             self.request_next_vertex = client.request_routing
@@ -103,11 +106,13 @@ class VertexRuntime:
 
 
 class GraphSimulation:
-    def __init__(self, graph: LabelledGraph, env: simpy.Environment, mes_control_mode: bool):
+    def __init__(self, graph: LabelledGraph, env: simpy.Environment, out_log_csv_file: str,
+                 mes_control_mode: bool, mes_host: str = None, mes_port: int = None):
         self.graph = graph
         self.env = env
+        self.out_log_csv_file = out_log_csv_file
         self.vertices: dict[int, VertexRuntime] = {}
-        # TODO add listener functions
+        # TODO add listener functions for ending conditions (associated to arg batch number)
         # self._listeners: list[Callable[[dict], None]] = []
         self._next_tray_id = 1
         self._trays: dict[int, Tray] = {}
@@ -118,7 +123,7 @@ class GraphSimulation:
             self._clients: dict[int, StationTCPClient] = {}
             for vertex in self.graph.vertices.values():
                 # TODO configure server host
-                client = StationTCPClient(env=self.env, host='localhost', port=6789, timeout=60)
+                client = StationTCPClient(env=self.env, host=mes_host, port=mes_port, timeout=60)
                 self._clients[vertex.id] = client
                 self.vertices[vertex.id] = VertexRuntime(self.env, vertex,
                                                          get_arc_to_next_vertex=self.graph.get_arc,
@@ -176,12 +181,11 @@ class GraphSimulation:
         self.env.process(_after_put())
         return ev
 
-    @staticmethod
-    def _emit(event: dict):
+    def _emit(self, event: dict):
         try:
             print(event)
-            file_exists = os.path.exists(OUT_LOG_CSV_FILE)
-            write_header = not file_exists or os.path.getsize(OUT_LOG_CSV_FILE) == 0
+            file_exists = os.path.exists(self.out_log_csv_file)
+            write_header = not file_exists or os.path.getsize(self.out_log_csv_file) == 0
             # row = {k: event.get(k, "") for k in CSV_FIELDS}
             row = {
                 'time': event.get('t', ""),
@@ -190,7 +194,7 @@ class GraphSimulation:
                 'workpiece_id': 'P' + str(event.get('workpiece_id', "")),
                 'activity': event.get('type', ""),
             }
-            with open(OUT_LOG_CSV_FILE, mode='a', newline='', encoding='utf-8') as f:
+            with open(self.out_log_csv_file, mode='a', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
                 if write_header:
                     writer.writeheader()
@@ -206,21 +210,71 @@ class GraphSimulation:
 
 
 if __name__ == '__main__':
-    RandomFactory.set_seed(1762904783269162000)
+    parser = argparse.ArgumentParser(description='Run graph-based discrete-event simulation.')
+    parser.add_argument('-g', '--graph-model-file', default=DEFAULT_GRAPH_MODEL_FILE,
+                        help='Path to the system graph JSON file.')
+    parser.add_argument('-o', '--out-log-csv-file', default=DEFAULT_OUT_LOG_CSV_FILE,
+                        help='Path to the output CSV event log file.')
+    parser.add_argument('-n', '--tray-number', type=int,
+                        help='Number of trays to inject at start.')
+    parser.add_argument('-f', '--factor', type=float, default=0,
+                        help='Simulation speed factor (sim seconds per real second), 0 for as fast as possible.')
+    parser.add_argument('-s', '--seed', type=int, default=None,
+                        help='Random seed for the simulation (default: No seed fixed).')
+    parser.add_argument('-t', '--end-time', type=float,
+                        help='Simulation end time in simulated seconds.')
+    parser.add_argument('-m', '--mes-control-mode', action=argparse.BooleanOptionalAction, default=False,
+                        help='Enable/disable MES control mode (default: disabled).')
+    parser.add_argument('--mes-host', default='localhost',
+                        help='Hostname for station TCP clients (required when --mes-control-mode).')
+    parser.add_argument('--mes-port', type=int, default=6789,
+                        help='Port for station TCP clients (required when --mes-control-mode).')
+    args = parser.parse_args()
 
-    with open(GRAPH_MODEL_FILE, 'r') as f:
+    # Load graph model
+    with open(args.graph_model_file, 'r') as f:
         graph_json = json.load(f)
     g = LabelledGraph('System Graph', graph_json)
 
-    if os.path.exists(OUT_LOG_CSV_FILE):
-        os.remove(OUT_LOG_CSV_FILE)
+    # Prepare log file
+    try:
+        out_dir = os.path.dirname(args.out_log_csv_file) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        if os.path.exists(args.out_log_csv_file):
+            os.remove(args.out_log_csv_file)
+    except Exception as e:
+        print(f"[setup] Could not prepare log file '{args.out_log_csv_file}': {e}")
 
-    # env = simpy.RealtimeEnvironment(factor=0.1, strict=False)
-    env = simpy.Environment()
-    sim = GraphSimulation(g, env=env, mes_control_mode=False)
+    # Set up simulation environment
+    if args.seed is not None:
+        RandomFactory.set_seed(args.seed)
 
-    sim.inject_tray(spawn_vertex_id=1, at=0.0)
-    sim.inject_tray(spawn_vertex_id=1, at=0.0)
-    sim.inject_tray(spawn_vertex_id=1, at=0.0)
+    if args.factor == 0:
+        env = simpy.Environment()
+    else:
+        env = simpy.RealtimeEnvironment(factor=args.factor, strict=False)
 
-    sim.run(until=1000)
+    if args.mes_control_mode:
+        if not args.mes_host or not args.mes_port:
+            parser.error('--mes-host and --mes-port are required when --mes-control-mode is enabled')
+    sim = GraphSimulation(graph=g, env=env, out_log_csv_file=args.out_log_csv_file,
+                          mes_control_mode=args.mes_control_mode, mes_host=args.mes_host, mes_port=args.mes_port)
+
+    # Inject trays at time 0
+    for _ in range(args.tray_number):
+        sim.inject_tray(spawn_vertex_id=1, at=0.0)
+
+    # Print seed and measure real (wall-clock) time taken by the simulation run
+    seed = RandomFactory.get_seed()
+    print(f"Simulation begins. Random seed used: {seed}")
+    start_real = time.time()
+    # Run the simulation (simulated time). When this returns, simulation is complete.
+    # TODO: for MES, send order batch and receive batch completion message
+    sim.run(until=args.end_time)
+    end_real = time.time()
+
+    elapsed_real = end_real - start_real
+    # Also show the simulation's final clock value
+    sim_time = getattr(env, 'now', None)
+    print(f"-------------------\n"
+          f"Simulation finished. simulated-time={sim_time}, real-elapsed={elapsed_real:.3f}s, seed={seed}")

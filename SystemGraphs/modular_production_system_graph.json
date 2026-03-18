@@ -67,11 +67,13 @@
     {
       "tail": 5,
       "head": 6,
+      "routing_probability": 0.6,
       "transfer_time_distribution": { "type": "normal", "parameters": [35.99550008773804, 1.665236483181311] }
     },
     {
       "tail": 5,
       "head": 7,
+      "routing_probability": 0.4,
       "transfer_time_distribution": { "type": "normal", "parameters": [63.59299993515015, 0.0] }
     },
     {

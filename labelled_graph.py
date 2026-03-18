@@ -23,6 +23,7 @@ class Arc:
     def __init__(self, arc_json: dict):
         self.tail: int = arc_json["tail"]
         self.head: int = arc_json["head"]
+        self.routing_probability: float = float(arc_json.get("routing_probability", 1.0))
         self.transfer_time_distribution_type: str = arc_json["transfer_time_distribution"]["type"]
         self.transfer_time_distribution_params: list[float] = arc_json["transfer_time_distribution"]["parameters"]
         self.transfer: Callable[[], float] \
@@ -30,6 +31,7 @@ class Arc:
 
     def __str__(self):
         return ((f"Arc from {self.tail} to {self.head}, \n"
+                f"routing_probability={self.routing_probability}, \n"
                 f"transfer_time_distribution={self.transfer_time_distribution_type}"
                 f"{self.transfer_time_distribution_params}, \n"
                 f"sample_transfer_time={self.transfer()} \n"))
@@ -57,9 +59,35 @@ class LabelledGraph:
     def search_arcs(self, tail: int) -> list[Arc]:
         return [self.arcs[key] for key in self.arcs.keys() if key[0] == tail]
 
+    def get_outgoing_arcs(self, tail: int) -> list[Arc]:
+        return self.search_arcs(tail)
+
+    def get_next_vertices(self, tail: int) -> list[int]:
+        return [arc.head for arc in self.get_outgoing_arcs(tail)]
+
+    def select_next_arc(self, tail: int) -> Arc:
+        outgoing_arcs = self.get_outgoing_arcs(tail)
+        if not outgoing_arcs:
+            raise KeyError(f"Vertex {tail} has no outgoing arcs")
+
+        if len(outgoing_arcs) == 1:
+            return outgoing_arcs[0]
+
+        weights = [max(0.0, float(arc.routing_probability)) for arc in outgoing_arcs]
+        total_weight = sum(weights)
+        if total_weight <= 0.0:
+            raise ValueError(f"Outgoing routing probabilities for vertex {tail} must sum to a positive value")
+
+        rng = RandomFactory._get_rng()
+        selected_idx = int(rng.choice(len(outgoing_arcs), p=[w / total_weight for w in weights]))
+        return outgoing_arcs[selected_idx]
+
+    def select_next_vertex(self, tail: int) -> int:
+        return self.select_next_arc(tail).head
+
     def __str__(self):
         vertices_str = "\n".join(str(v) for v in self.vertices.values())
-        arcs_str = "\n".join(str(a) for a in self.arcs)
+        arcs_str = "\n".join(str(a) for a in self.arcs.values())
         return (f"{'=' * 50}\n"
                 f"Labelled graph \"{self.name}\" has {len(self.vertices)} vertices and {len(self.arcs)} arcs.\n\n"
                 f"{vertices_str}\n{arcs_str}\n"
@@ -72,5 +100,4 @@ if __name__ == "__main__":
 
     graph = LabelledGraph("Example Graph", graph_json)
     print(graph)
-
 

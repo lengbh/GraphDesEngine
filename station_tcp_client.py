@@ -61,7 +61,9 @@ class StationTCPClient(TCPClient):
 
     def request_action(self, workstation_id: int, tray_id: int) -> tuple[int, int, int] | tuple[None, None, None]:
         """Send StationActionQuery and synchronously wait for StationActionRsp.
-        Returns (action_type, next_station_id), or (None, None) on timeout/error.
+        Returns `(order_id, action_type, next_station_id)`, or `(None, None, None)` on timeout/error.
+        `action_type` is `0` for release and `1` for execute. `next_station_id` is only relevant when
+        `action_type == 0`.
         Note: This blocks the calling thread until a response arrives or timeout.
         """
         try:
@@ -105,7 +107,9 @@ class StationTCPClient(TCPClient):
 
     def request_routing(self, workstation_id: int, tray_id: int) -> tuple[int, int, int] | tuple[None, None, None]:
         """Send StationActionDoneQuery and synchronously wait for StationActionRsp.
-        Returns (action_type, next_station_id) or (None, None) on timeout/error.
+        Returns `(order_id, action_type, next_station_id)`, or `(None, None, None)` on timeout/error.
+        The routing decision is given by `next_station_id` when `action_type == 0`; otherwise the
+        workstation should execute locally and ignore `next_station_id`.
         Note: This blocks the calling thread until a response arrives or timeout.
         """
         try:

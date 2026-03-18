@@ -31,7 +31,7 @@ Assumptions:
 from __future__ import annotations
 import struct
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 # Message type constants
 MSG_STATION_ACTION_QUERY = 0x1046
@@ -43,12 +43,10 @@ MSG_STATION_ACTION_RSP  = 0x1048
 _FMT_U32_2 = '<II'   # workstation_id, tray_id
 _FMT_U32_3 = '<III'  # workstation_id, tray_id, extra
 
-# Bring in TCPMsg from the Python wrapper of the pybind11 module
-from tcp_client import TCPMsg
-
-
-def _make_msg(msg_type: int, payload: bytes) -> TCPMsg:
+def _make_msg(msg_type: int, payload: bytes) -> Any:
     """Create a TCPMsg with given type and payload bytes."""
+    from tcp_client import TCPMsg
+
     m = TCPMsg()
     m.header.type = int(msg_type)
     m.body = list(payload)
@@ -63,7 +61,7 @@ class StationActionQuery:
     FMT: ClassVar[str] = _FMT_U32_2
     SIZE: ClassVar[int] = struct.calcsize(FMT)
 
-    def pack(self) -> TCPMsg:
+    def pack(self) -> Any:
         payload = struct.pack(self.FMT, self.workstation_id & 0xFFFFFFFF, self.tray_id & 0xFFFFFFFF)
         return _make_msg(MSG_STATION_ACTION_QUERY, payload)
 
@@ -81,7 +79,7 @@ class StationActionDoneQuery:
     FMT: ClassVar[str] = _FMT_U32_2
     SIZE: ClassVar[int] = struct.calcsize(FMT)
 
-    def pack(self) -> TCPMsg:
+    def pack(self) -> Any:
         payload = struct.pack(self.FMT, self.workstation_id & 0xFFFFFFFF, self.tray_id & 0xFFFFFFFF)
         return _make_msg(MSG_STATION_ACTION_DONE_QUERY, payload)
 
@@ -102,7 +100,7 @@ class StationActionRsp:
     FMT: ClassVar[str] = '<IIIII'
     SIZE: ClassVar[int] = struct.calcsize(FMT)
 
-    def pack(self, msg_type: int = MSG_STATION_ACTION_RSP) -> TCPMsg:
+    def pack(self, msg_type: int = MSG_STATION_ACTION_RSP) -> Any:
         payload = struct.pack(
             self.FMT,
             self.qry.workstation_id & 0xFFFFFFFF,

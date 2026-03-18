@@ -6,10 +6,13 @@ import csv
 import os
 import time
 import argparse
-from station_tcp_client import StationTCPClient
+from typing import TYPE_CHECKING
 from simpy.resources.store import StorePut
 from labelled_graph import Vertex, Arc, LabelledGraph
 from random_util import RandomFactory
+
+if TYPE_CHECKING:
+    from station_tcp_client import StationTCPClient
 
 DEFAULT_GRAPH_MODEL_FILE = 'SystemGraphs/two_station_circular_system_graph.json'
 DEFAULT_OUT_LOG_CSV_FILE = 'EventLogs/event_logs.csv'
@@ -41,15 +44,15 @@ class VertexRuntime:
                  env: simpy.Environment,
                  vertex: Vertex,
                  get_arc_to_next_vertex: Callable[[int, int], Arc],
+                 select_next_vertex: Callable[[int], int],
                  transfer_to_next_vertex: Callable[[int, Tray], StorePut],
                  emit_event: Callable[[dict], None],
-                 client: StationTCPClient = None):
+                 client: 'StationTCPClient | None' = None):
         self.env = env
         self.vertex = vertex
         if client is None:
-            # TODO replace with routing probabilities
-            self.request_action = lambda _, __: (0, 1, 0)
-            self.request_next_vertex = lambda current_vertex, __: (0, 0, (2 if current_vertex == 1 else 1))
+            self.request_action = lambda _, __: (0, 1, 0)   # just execute
+            self.request_next_vertex = lambda current_vertex, __: (0, 0, select_next_vertex(current_vertex))
         else:
             self.request_action = client.request_action
             self.request_next_vertex = client.request_routing
@@ -120,6 +123,8 @@ class GraphSimulation:
 
         # Instantiate vertices for simulation
         if mes_control_mode:
+            from station_tcp_client import StationTCPClient
+
             self._clients: dict[int, StationTCPClient] = {}
             for vertex in self.graph.vertices.values():
                 # TODO configure server host
@@ -127,6 +132,7 @@ class GraphSimulation:
                 self._clients[vertex.id] = client
                 self.vertices[vertex.id] = VertexRuntime(self.env, vertex,
                                                          get_arc_to_next_vertex=self.graph.get_arc,
+                                                         select_next_vertex=self.graph.select_next_vertex,
                                                          transfer_to_next_vertex=self.transfer_to_next_vertex,
                                                          emit_event=self._emit,
                                                          client=client)
@@ -134,6 +140,7 @@ class GraphSimulation:
             for vertex in self.graph.vertices.values():
                 self.vertices[vertex.id] = VertexRuntime(self.env, vertex,
                                                          get_arc_to_next_vertex=self.graph.get_arc,
+                                                         select_next_vertex=self.graph.select_next_vertex,
                                                          transfer_to_next_vertex=self.transfer_to_next_vertex,
                                                          emit_event=self._emit,
                                                          client=None)
@@ -278,3 +285,6 @@ if __name__ == '__main__':
     sim_time = getattr(env, 'now', None)
     print(f"-------------------\n"
           f"Simulation finished. simulated-time={sim_time}, real-elapsed={elapsed_real:.3f}s, seed={seed}")
+
+
+    # TODO use dataframe to record data and write to output file (csv, parquet) on exit

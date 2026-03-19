@@ -73,6 +73,8 @@ class VertexRuntime:
 
         if client is None:
             # Local mode: always process at the station, then route using the graph.
+            # TODO in serial mode the order id can be the tray id
+            # TODO in mes less non serial mode, the order id should be increasingly assigned
             self.request_action = lambda _, __: (0, 1, 0)
             self.request_next_vertex = lambda current_vertex, __: (0, 0, select_next_vertex(current_vertex))
         else:
@@ -117,6 +119,12 @@ class VertexRuntime:
 
             yield self.env.process(self._service_tray(tray))
 
+            if self.vertex.is_sink:
+                # Serial-system sink: a finished tray leaves the system here instead of
+                # requesting routing and re-entering the graph.
+                self._complete_tray(tray)
+                continue
+
             order_id, action, next_v = self.request_next_vertex(self.vertex.id, tray.id)
             tray.current_workpiece_id = order_id
             assert action == 0
@@ -142,6 +150,15 @@ class VertexRuntime:
                 'tray_id': tray.id,
                 'workpiece_id': tray.current_workpiece_id,
             })
+
+    def _complete_tray(self, tray: Tray):
+        self.emit_event({
+            'type': 'tray_completed',
+            't': self.env.now,
+            'vertex_id': self.vertex.id,
+            'tray_id': tray.id,
+            'workpiece_id': tray.current_workpiece_id,
+        })
 
     def _release_to_next_vertex(self, next_vertex: int, tray: Tray):
         """Reserve downstream capacity before release, then start transport asynchronously.
@@ -219,6 +236,17 @@ class GraphSimulation:
     def add_event_listener(self, listener: Callable[[dict], None]):
         self._listeners.append(listener)
 
+    def get_source_vertex_ids(self) -> list[int]:
+        source_vertex_ids = sorted(vertex.id for vertex in self.graph.vertices.values() if vertex.is_source)
+        return source_vertex_ids or [1]
+
+    def _create_tray(self) -> Tray:
+        tray_id = self._next_tray_id
+        self._next_tray_id += 1
+        tray = Tray(id=tray_id, current_workpiece_id=0)
+        self._trays[tray_id] = tray
+        return tray
+
     def _create_vertex_runtimes(self, mes_control_mode: bool, mes_host: str | None, mes_port: int | None):
         if not mes_control_mode:
             for vertex in self.graph.vertices.values():
@@ -253,10 +281,8 @@ class GraphSimulation:
             pass
 
     def inject_tray(self, spawn_vertex_id: int, at: float = 0) -> int:
-        tray_id = self._next_tray_id
-        self._next_tray_id += 1
-        tray = Tray(id=tray_id, current_workpiece_id=0)
-        self._trays[tray_id] = tray
+        tray = self._create_tray()
+        tray_id = tray.id
 
         def _spawn():
             if at > 0:
@@ -286,6 +312,25 @@ class GraphSimulation:
 
         self.env.process(_spawn())
         return tray_id
+
+    def start_serial_injection(self):
+        for source_vertex_id in self.get_source_vertex_ids():
+            self.env.process(self._source_feeder(source_vertex_id))
+
+    def _source_feeder(self, source_vertex_id: int):
+        # Serial mode keeps source buffers fed continuously. A new tray is
+        # created whenever one source-buffer slot becomes available.
+        while True:
+            yield self.reserve_buffer_slot(source_vertex_id)
+            tray = self._create_tray()
+            self._emit({
+                'type': 'injected',
+                't': self.env.now,
+                'vertex_id': source_vertex_id,
+                'tray_id': tray.id,
+                'workpiece_id': tray.current_workpiece_id,
+            })
+            yield self.transfer_to_next_vertex(source_vertex_id, tray, slot_reserved=True)
 
     def reserve_buffer_slot(self, vertex_id: int) -> Event:
         """Reserve one downstream input-buffer slot before a BAS release."""
@@ -326,6 +371,11 @@ class GraphSimulation:
         normalized_event = dict(event)
         normalized_event.setdefault('t', self.env.now)
 
+        if normalized_event.get('type') == 'tray_completed':
+            tray_id = normalized_event.get('tray_id')
+            if tray_id is not None and tray_id not in self._completed:
+                self._completed.append(tray_id)
+
         for listener in self._listeners:
             try:
                 listener(dict(normalized_event))
@@ -365,10 +415,12 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--out-log-csv-file', default=DEFAULT_OUT_LOG_CSV_FILE,
                         help='Path to the output CSV event log file.')
     parser.add_argument('-n', '--tray-number', type=int,
-                        help='Number of trays to inject at start.')
+                        help='Number of trays to inject at start in non-serial mode.')
     parser.add_argument('-f', '--factor', type=float, default=0,
                         help='Simulation speed factor (sim seconds per real second), 0 for as fast as possible.')
-    parser.add_argument('-s', '--seed', type=int, default=None,
+    parser.add_argument('-s', '--serial', action='store_true',
+                        help='Enable serial mode with continuous source injection.')
+    parser.add_argument('--seed', type=int, default=None,
                         help='Random seed for the simulation (default: No seed fixed).')
     parser.add_argument('-t', '--end-time', type=float,
                         help='Simulation end time in simulated seconds.')
@@ -403,6 +455,8 @@ if __name__ == '__main__':
     if args.mes_control_mode:
         if not args.mes_host or not args.mes_port:
             parser.error('--mes-host and --mes-port are required when --mes-control-mode is enabled')
+    if not args.serial and args.tray_number is None:
+        parser.error('--tray-number is required when --serial is not enabled')
 
     sim = GraphSimulation(
         graph=g,
@@ -413,8 +467,12 @@ if __name__ == '__main__':
         mes_port=args.mes_port,
     )
 
-    for _ in range(args.tray_number):
-        sim.inject_tray(spawn_vertex_id=1, at=0.0)
+    if args.serial:
+        sim.start_serial_injection()
+    else:
+        for source_vertex_id in sim.get_source_vertex_ids():
+            for _ in range(args.tray_number):
+                sim.inject_tray(spawn_vertex_id=source_vertex_id, at=0.0)
 
     seed = RandomFactory.get_seed()
     print(f"Simulation begins. Random seed used: {seed}")

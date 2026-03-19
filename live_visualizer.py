@@ -475,8 +475,12 @@ def run_simulation(args, live_state: LiveSystemState):
         event_listeners=[live_state.apply_event],
     )
 
-    for _ in range(args.tray_number):
-        sim.inject_tray(spawn_vertex_id=1, at=0.0)
+    if args.serial:
+        sim.start_serial_injection()
+    else:
+        for source_vertex_id in sim.get_source_vertex_ids():
+            for _ in range(args.tray_number):
+                sim.inject_tray(spawn_vertex_id=source_vertex_id, at=0.0)
 
     try:
         sim.run(until=args.end_time)
@@ -491,10 +495,12 @@ def parse_args():
     parser.add_argument("-o", "--out-log-csv-file", default=DEFAULT_OUT_LOG_CSV_FILE,
                         help="Path to the output CSV event log file.")
     parser.add_argument("-n", "--tray-number", type=int,
-                        help="Number of trays to inject at start.")
+                        help="Number of trays to inject at start in non-serial mode.")
     parser.add_argument("-f", "--factor", type=float, default=0,
                         help="Simulation speed factor (sim seconds per real second), 0 for as fast as possible.")
-    parser.add_argument("-s", "--seed", type=int, default=None,
+    parser.add_argument("-s", "--serial", action="store_true",
+                        help="Enable serial mode with continuous source injection.")
+    parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for the simulation (default: No seed fixed).")
     parser.add_argument("-t", "--end-time", type=float,
                         help="Simulation end time in simulated seconds.")
@@ -514,6 +520,8 @@ def parse_args():
         parser.error("--factor must be > 0 for live visualization")
     if args.mes_control_mode and (not args.mes_host or not args.mes_port):
         parser.error("--mes-host and --mes-port are required when --mes-control-mode is enabled")
+    if not args.serial and args.tray_number is None:
+        parser.error("--tray-number is required when --serial is not enabled")
 
     return args
 

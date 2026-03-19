@@ -8,6 +8,9 @@ class Vertex:
     def __init__(self, vertex_json: dict):
         self.id: int = vertex_json["id"]
         self.name: str = vertex_json["name"]
+        self.vertex_role: str = vertex_json.get("vertex_role", "internal")
+        self.is_source: bool = self.vertex_role == "source"
+        self.is_sink: bool = self.vertex_role == "sink"
         self.buffer_capacity: int = vertex_json["buffer_capacity"]
         self.service_distribution_type: str = vertex_json["service_time_distribution"]["type"]
         self.service_distribution_params: list[float] = vertex_json["service_time_distribution"]["parameters"]
@@ -15,7 +18,8 @@ class Vertex:
             = RandomFactory.get_random_generator(self.service_distribution_type, self.service_distribution_params)
 
     def __str__(self):
-        return ((f"Vertex {self.id}: name={self.name}, buffer_capacity={self.buffer_capacity}, \n"
+        return ((f"Vertex {self.id}: name={self.name}, role={self.vertex_role}, "
+                f"is_source={self.is_source}, is_sink={self.is_sink}, buffer_capacity={self.buffer_capacity}, \n"
                 f"service_time_distribution={self.service_distribution_type}{self.service_distribution_params}, \n"
                 f"sample_service_time={self.service()} \n"))
 
@@ -100,4 +104,3 @@ if __name__ == "__main__":
 
     graph = LabelledGraph("Example Graph", graph_json)
     print(graph)
-

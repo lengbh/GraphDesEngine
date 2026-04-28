@@ -1,0 +1,173 @@
+{
+  "vertices": [
+    {
+      "id": 1,
+      "name": "F1 - Input Preparation",
+      "vertex_role": "source",
+      "buffer_capacity": 3,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [50.0, 10.0]
+      }
+    },
+    {
+      "id": 2,
+      "name": "F2 - Pre-Processing",
+      "vertex_role": "internal",
+      "buffer_capacity": 2,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [65.0, 12.0]
+      }
+    },
+    {
+      "id": 3,
+      "name": "F3 - M3a Bottleneck Machine",
+      "vertex_role": "internal",
+      "buffer_capacity": 2,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [150.0, 25.0]
+      }
+    },
+    {
+      "id": 4,
+      "name": "F3 - M3b Bottleneck Machine",
+      "vertex_role": "internal",
+      "buffer_capacity": 2,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [150.0, 25.0]
+      }
+    },
+    {
+      "id": 5,
+      "name": "F3 - M3c Bottleneck Machine",
+      "vertex_role": "internal",
+      "buffer_capacity": 2,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [150.0, 25.0]
+      }
+    },
+    {
+      "id": 6,
+      "name": "F4 - Secondary Processing",
+      "vertex_role": "internal",
+      "buffer_capacity": 2,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [55.0, 10.0]
+      }
+    },
+    {
+      "id": 7,
+      "name": "F5 - Final Output",
+      "vertex_role": "sink",
+      "buffer_capacity": 4,
+      "service_time_distribution": {
+        "type": "normal",
+        "parameters": [40.0, 8.0]
+      }
+    }
+  ],
+  "arcs": [
+    {
+      "tail": 1,
+      "head": 2,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [18.0, 3.0]
+      }
+    },
+    {
+      "tail": 2,
+      "head": 3,
+      "routing_probability": 0.3333,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [12.0, 2.0]
+      }
+    },
+    {
+      "tail": 2,
+      "head": 4,
+      "routing_probability": 0.3333,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [12.0, 2.0]
+      }
+    },
+    {
+      "tail": 2,
+      "head": 5,
+      "routing_probability": 0.3334,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [12.0, 2.0]
+      }
+    },
+    {
+      "tail": 3,
+      "head": 6,
+      "routing_probability": 0.7,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [10.0, 2.0]
+      }
+    },
+    {
+      "tail": 3,
+      "head": 7,
+      "routing_probability": 0.3,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [12.0, 2.0]
+      }
+    },
+    {
+      "tail": 4,
+      "head": 6,
+      "routing_probability": 0.7,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [12.0, 2.0]
+      }
+    },
+    {
+      "tail": 4,
+      "head": 7,
+      "routing_probability": 0.3,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [10.0, 2.0]
+      }
+    },
+    {
+      "tail": 5,
+      "head": 6,
+      "routing_probability": 0.7,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [14.0, 2.0]
+      }
+    },
+    {
+      "tail": 5,
+      "head": 7,
+      "routing_probability": 0.3,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [9.0, 2.0]
+      }
+    },
+    {
+      "tail": 6,
+      "head": 7,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [10.0, 2.0]
+      }
+    }
+  ]
+}

@@ -5,7 +5,6 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-
 DEFAULT_LOG_CSV_FILE = "EventLogs/event_logs.csv"
 DEFAULT_OUTPUT_HTML_FILE = "EventLogs/simulation_timeline.html"
 

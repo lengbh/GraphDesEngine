@@ -5,6 +5,7 @@ import os
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, TypedDict
 from urllib.parse import urlparse
 
 import simpy
@@ -16,6 +17,33 @@ from sim_engine import GraphSimulation
 
 DEFAULT_GRAPH_MODEL_FILE = "SystemGraphs/two_station_circular_system_graph.json"
 DEFAULT_OUT_LOG_CSV_FILE = "EventLogs/live_visualizer_event_logs.csv"
+
+
+class VertexSnapshot(TypedDict):
+    id: int
+    name: str
+    buffer_capacity: int
+    buffer: list[str]
+    in_service: list[str]
+    pending_release: list[str]
+    x: float
+    y: float
+
+
+class EdgeSnapshot(TypedDict):
+    tail: int
+    head: int
+    transferring: list[str]
+
+
+class SystemSnapshot(TypedDict):
+    simulation_running: bool
+    simulation_time: float
+    event_count: int
+    vertices: dict[str, VertexSnapshot]
+    edges: list[EdgeSnapshot]
+    completed: list[str]
+    last_event: dict[str, Any] | None
 
 
 def compute_layout(graph: LabelledGraph) -> tuple[dict[int, dict[str, float]], list[dict[str, int]]]:
@@ -44,7 +72,7 @@ class LiveSystemState:
     def __init__(self, graph: LabelledGraph):
         positions, edges = compute_layout(graph)
         self._lock = threading.Lock()
-        self._snapshot = {
+        self._snapshot: SystemSnapshot = {
             "simulation_running": True,
             "simulation_time": 0.0,
             "event_count": 0,
@@ -77,7 +105,7 @@ class LiveSystemState:
             for edge in self._snapshot["edges"]
         }
 
-    def apply_event(self, event: dict):
+    def apply_event(self, event: dict[str, Any]):
         with self._lock:
             snapshot = self._snapshot
             snapshot["simulation_time"] = max(snapshot["simulation_time"], float(event.get("t", 0.0)))
@@ -109,7 +137,7 @@ class LiveSystemState:
             elif event_type == "transfer_start":
                 tail = event.get("tail")
                 head = event.get("head")
-                edge = self._edge_index.get((tail, head))
+                edge = self._edge_index.get((tail, head)) if tail is not None and head is not None else None
                 tail_vertex = snapshot["vertices"].get(str(tail))
                 if tail_vertex is not None:
                     self._remove_if_present(tail_vertex["in_service"], tray_id)
@@ -120,7 +148,7 @@ class LiveSystemState:
             elif event_type == "transfer_end":
                 tail = event.get("tail")
                 head = event.get("head")
-                edge = self._edge_index.get((tail, head))
+                edge = self._edge_index.get((tail, head)) if tail is not None and head is not None else None
                 if edge is not None:
                     self._remove_if_present(edge["transferring"], tray_id)
             elif event_type == "tray_completed":
@@ -130,12 +158,12 @@ class LiveSystemState:
         with self._lock:
             self._snapshot["simulation_running"] = False
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> SystemSnapshot:
         with self._lock:
             return json.loads(json.dumps(self._snapshot))
 
     @staticmethod
-    def _format_tray_id(tray_id) -> str:
+    def _format_tray_id(tray_id: object) -> str:
         return f"T{tray_id}" if tray_id not in (None, "") else ""
 
     @staticmethod
@@ -418,7 +446,8 @@ def build_html() -> str:
 
 
 class VisualizerServer(ThreadingHTTPServer):
-    def __init__(self, server_address, request_handler_class, live_state: LiveSystemState):
+    def __init__(self, server_address: tuple[str, int],
+                 request_handler_class: type[BaseHTTPRequestHandler], live_state: LiveSystemState):
         super().__init__(server_address, request_handler_class)
         self.live_state = live_state
         self.index_html = build_html().encode("utf-8")
@@ -426,17 +455,20 @@ class VisualizerServer(ThreadingHTTPServer):
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        server = self.server
+        if not isinstance(server, VisualizerServer):
+            raise TypeError("RequestHandler requires a VisualizerServer")
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(self.server.index_html)))
+            self.send_header("Content-Length", str(len(server.index_html)))
             self.end_headers()
-            self.wfile.write(self.server.index_html)
+            self.wfile.write(server.index_html)
             return
 
         if parsed.path == "/state":
-            payload = json.dumps(self.server.live_state.snapshot()).encode("utf-8")
+            payload = json.dumps(server.live_state.snapshot()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -451,7 +483,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         return
 
 
-def run_simulation(args, live_state: LiveSystemState):
+def run_simulation(args: argparse.Namespace, live_state: LiveSystemState):
     with open(args.graph_model_file, "r", encoding="utf-8") as handle:
         graph_json = json.load(handle)
     graph = LabelledGraph("System Graph", graph_json)
@@ -488,7 +520,7 @@ def run_simulation(args, live_state: LiveSystemState):
         live_state.mark_complete()
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a live browser-based visualizer for GraphDesEngine.")
     parser.add_argument("-g", "--graph-model-file", default=DEFAULT_GRAPH_MODEL_FILE,
                         help="Path to the system graph JSON file.")

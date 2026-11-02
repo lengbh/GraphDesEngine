@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from typing import Callable
+from typing import Any, Callable
 
 import simpy
 from simpy.events import Event
@@ -48,6 +48,7 @@ class VertexRuntime:
     - an input buffer (`buffer`)
     - a free-slot counter for that buffer (`free_slots`)
     - a service resource (`server`)
+    - an ideal idle/running SMP for service timing (`smp`, `smp_state`)
 
     Under BAS (blocking-after-service), a finished tray may not be released
     until the downstream station has a reserved input-buffer slot.
@@ -65,7 +66,7 @@ class VertexRuntime:
                  reserve_buffer_slot: Callable[[int], Event],
                  release_buffer_slot: Callable[[int], Event],
                  transfer_to_next_vertex: Callable[[int, Tray, bool], Event],
-                 emit_event: Callable[[dict], None],
+                 emit_event: Callable[[dict[str, Any]], None],
                  client: 'StationTCPClient | None' = None):
         self.env = env
         self.vertex = vertex
@@ -88,6 +89,8 @@ class VertexRuntime:
         # A slot is reserved before release, then consumed by the actual enqueue.
         self.free_slots = simpy.Container(env, capacity=vertex.buffer_capacity, init=vertex.buffer_capacity)
         self.server = simpy.Resource(env, capacity=1)
+        self.smp = vertex.smp
+        self.smp_state = self.smp.initial_state
         self.emit_event = emit_event
         self.reserve_buffer_slot = reserve_buffer_slot
         self.release_buffer_slot = release_buffer_slot
@@ -110,9 +113,10 @@ class VertexRuntime:
             })
 
             order_id, action, next_v = self.request_action(self.vertex.id, tray.id)
+            if order_id is None or action is None or next_v is None:
+                raise RuntimeError(f"No valid action response for station {self.vertex.id}, tray {tray.id}")
             tray.current_workpiece_id = order_id
 
-            # TODO add error and exception handling around client interaction
             if action == 0:
                 yield self.env.process(self._dispatch_to_next_vertex(next_v, tray))
                 continue
@@ -126,6 +130,8 @@ class VertexRuntime:
                 continue
 
             order_id, action, next_v = self.request_next_vertex(self.vertex.id, tray.id)
+            if order_id is None or action is None or next_v is None:
+                raise RuntimeError(f"No valid routing response for station {self.vertex.id}, tray {tray.id}")
             tray.current_workpiece_id = order_id
             assert action == 0
             yield self.env.process(self._dispatch_to_next_vertex(next_v, tray))
@@ -133,7 +139,13 @@ class VertexRuntime:
     def _service_tray(self, tray: Tray):
         with self.server.request() as req:
             yield req
-            service_time = self.vertex.service()
+            # The existing action decision enables idle -> running.
+            start_transition = self.smp.sample_transition(self.smp_state)
+            self.smp_state = start_transition.next_state
+            completion_transition = self.smp.sample_transition(self.smp_state)
+            service_time = completion_transition.holding_time
+            if service_time is None:
+                raise RuntimeError("The running state requires a timed completion transition")
             self.emit_event({
                 'type': 'service_start',
                 't': self.env.now,
@@ -143,6 +155,8 @@ class VertexRuntime:
                 'service_time': service_time,
             })
             yield self.env.timeout(service_time)
+            # Processing completion does not decide when the tray is released.
+            self.smp_state = completion_transition.next_state
             self.emit_event({
                 'type': 'service_end',
                 't': self.env.now,
@@ -203,7 +217,7 @@ class VertexRuntime:
             'transfer_time': transfer_time,
         })
         yield self.env.timeout(transfer_time)
-        yield self.transfer_to_next_vertex(next_vertex, tray, slot_reserved=slot_reserved)
+        yield self.transfer_to_next_vertex(next_vertex, tray, slot_reserved)
         self.emit_event({
             'type': 'transfer_end',
             't': self.env.now,
@@ -218,13 +232,13 @@ class GraphSimulation:
     """Simulation wrapper around the graph runtime and event logging."""
 
     def __init__(self, graph: LabelledGraph, env: simpy.Environment, out_log_csv_file: str,
-                 mes_control_mode: bool, mes_host: str = None, mes_port: int = None,
-                 event_listeners: list[Callable[[dict], None]] | None = None):
+                 mes_control_mode: bool, mes_host: str | None = None, mes_port: int | None = None,
+                 event_listeners: list[Callable[[dict[str, Any]], None]] | None = None):
         self.graph = graph
         self.env = env
         self.out_log_csv_file = out_log_csv_file
         self.vertices: dict[int, VertexRuntime] = {}
-        self._listeners: list[Callable[[dict], None]] = list(event_listeners or [])
+        self._listeners: list[Callable[[dict[str, Any]], None]] = list(event_listeners or [])
         self._next_tray_id = 1
         self._trays: dict[int, Tray] = {}
         self._completed: list[int] = []
@@ -233,7 +247,7 @@ class GraphSimulation:
 
         self.env.process(self._completion_monitor())
 
-    def add_event_listener(self, listener: Callable[[dict], None]):
+    def add_event_listener(self, listener: Callable[[dict[str, Any]], None]):
         self._listeners.append(listener)
 
     def get_source_vertex_ids(self) -> list[int]:
@@ -252,6 +266,9 @@ class GraphSimulation:
             for vertex in self.graph.vertices.values():
                 self.vertices[vertex.id] = self._build_vertex_runtime(vertex, client=None)
             return
+
+        if not mes_host or mes_port is None:
+            raise ValueError("MES host and port must be provided when MES control mode is enabled")
 
         from station_tcp_client import StationTCPClient
 
@@ -334,12 +351,12 @@ class GraphSimulation:
 
     def reserve_buffer_slot(self, vertex_id: int) -> Event:
         """Reserve one downstream input-buffer slot before a BAS release."""
-        vertex = self.vertices.get(vertex_id)
+        vertex = self.vertices[vertex_id]
         return vertex.free_slots.get(1)
 
     def release_buffer_slot(self, vertex_id: int) -> Event:
         """Return one input-buffer slot after a tray leaves a station buffer."""
-        vertex = self.vertices.get(vertex_id)
+        vertex = self.vertices[vertex_id]
         return vertex.free_slots.put(1)
 
     def transfer_to_next_vertex(self, vertex_id: int, tray: Tray, slot_reserved: bool = False) -> Event:
@@ -350,7 +367,7 @@ class GraphSimulation:
         under BAS and this method only performs the actual enqueue.
         """
 
-        vertex = self.vertices.get(vertex_id)
+        vertex = self.vertices[vertex_id]
 
         def _enqueue():
             if not slot_reserved:
@@ -367,7 +384,7 @@ class GraphSimulation:
 
         return self.env.process(_enqueue())
 
-    def _emit(self, event: dict):
+    def _emit(self, event: dict[str, Any]):
         normalized_event = dict(event)
         normalized_event.setdefault('t', self.env.now)
 

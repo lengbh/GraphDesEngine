@@ -1,6 +1,8 @@
+import argparse
 import json
 from typing import Callable
 from random_util import RandomFactory
+from smp import SMP
 
 GRAPH_MODEL_EXAMPLE_FILE = "graph_model_example.json"
 
@@ -12,10 +14,19 @@ class Vertex:
         self.is_source: bool = self.vertex_role == "source"
         self.is_sink: bool = self.vertex_role == "sink"
         self.buffer_capacity: int = vertex_json["buffer_capacity"]
-        self.service_distribution_type: str = vertex_json["service_time_distribution"]["type"]
-        self.service_distribution_params: list[float] = vertex_json["service_time_distribution"]["parameters"]
-        self.service: Callable[[], float] \
-            = RandomFactory.get_random_generator(self.service_distribution_type, self.service_distribution_params)
+        if "smp" in vertex_json:
+            self.smp = SMP.from_json(vertex_json["smp"])
+            self.smp.require_ideal_machine()
+            distribution = vertex_json["smp"]["holding_time_distributions"]["running"]["idle"]
+            if "service_time_distribution" in vertex_json and vertex_json["service_time_distribution"] != distribution:
+                raise ValueError(f"Vertex {self.id} has conflicting SMP and legacy service-time distributions")
+            self.service = self.smp.get_holding_time_sampler("running", "idle")
+        else:
+            distribution = vertex_json["service_time_distribution"]
+            self.service = RandomFactory.get_random_generator(distribution["type"], distribution["parameters"])
+            self.smp = SMP.ideal_machine(self.service)
+        self.service_distribution_type: str = distribution["type"]
+        self.service_distribution_params: list[float] = distribution["parameters"]
 
     def __str__(self):
         return ((f"Vertex {self.id}: name={self.name}, role={self.vertex_role}, "
@@ -99,7 +110,11 @@ class LabelledGraph:
 
 
 if __name__ == "__main__":
-    with open(GRAPH_MODEL_EXAMPLE_FILE, "r") as f:
+    parser = argparse.ArgumentParser(description="Load and display a labelled system graph.")
+    parser.add_argument("-g", "--graph-model-file", default=GRAPH_MODEL_EXAMPLE_FILE,
+                        help="Path to the system graph JSON file.")
+    args = parser.parse_args()
+    with open(args.graph_model_file, "r") as f:
         graph_json = json.load(f)
 
     graph = LabelledGraph("Example Graph", graph_json)

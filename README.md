@@ -31,6 +31,7 @@ python sim_engine.py
 ## File structure
 
 - `sim_engine.py` — Main simulation driver and event logger
+- `smp.py` — Local semi-Markov models and conditional holding-time sampling
 - `labelled_graph.py` — Graph model (Vertex, Arc, LabelledGraph), JSON loading
 - `random_util.py` — RandomFactory for distribution sampling
 - `SystemGraphs/` — Example graph JSON files
@@ -46,6 +47,35 @@ The following files are related to TCP Communication with external MES Server, r
 ## System graph model input
 
 The modelling of manufacturing systems is described in a JSON file as labelled directed graphs. Three examples are given in `SystemGraphs/`.
+
+Each station uses an ideal idle/running SMP, defined in its `smp` field.
+An execute decision enables the transition from idle to running; the sampled running-state holding time determines when processing finishes and the station returns to idle.
+The runtime exposes this state as `VertexRuntime.smp_state`; MES action, routing, and release decisions continue through the existing interfaces.
+The migrated run profiles use separate `_smp.json` graph files that declare these models explicitly, with their original timing-distribution values.
+For example, `lucr_scenario_1_smp.json` contains the SMP model, while `lucr_scenario_1.json` retains the original format and contents.
+
+For example, a station's model can be:
+
+```json
+"smp": {
+  "initial_state": "idle",
+  "states": ["idle", "running"],
+  "transition_probabilities": {
+    "idle": {"running": 1.0},
+    "running": {"idle": 1.0}
+  },
+  "holding_time_distributions": {
+    "idle": {"running": null},
+    "running": {"idle": {"type": "normal", "parameters": [7.0, 1.1]}}
+  }
+}
+```
+
+`null` means that idle ends on an external execute decision, rather than after a sampled duration.
+The current station runtime accepts this idle/running cycle; other state behaviour requires a later runtime extension.
+Legacy `service_time_distribution` fields are still accepted and wrapped in the same ideal model.
+If both forms are present, their running-time distributions must agree.
+MESServer reads the running-to-idle distribution for its existing service-time calculations.
 
 To accept control from external MES Server, the same graph JSON file which `sim_engine.py` loads should also be copied to and loaded by MES Server. 
 

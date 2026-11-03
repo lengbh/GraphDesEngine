@@ -48,7 +48,7 @@ The following files are related to TCP Communication with external MES Server, r
 
 The modelling of manufacturing systems is described in a JSON file as labelled directed graphs. Three examples are given in `SystemGraphs/`.
 
-Each station uses an ideal idle/running SMP, defined in its `smp` field.
+Each station uses a local SMP, defined in its `smp` field.
 An execute decision enables the transition from idle to running; the sampled running-state holding time determines when processing finishes and the station returns to idle.
 The runtime exposes this state as `VertexRuntime.smp_state`; MES action, routing, and release decisions continue through the existing interfaces.
 The migrated run profiles use separate `_smp.json` graph files that declare these models explicitly, with their original timing-distribution values.
@@ -72,10 +72,15 @@ For example, a station's model can be:
 ```
 
 `null` means that idle ends on an external execute decision, rather than after a sampled duration.
-The current station runtime accepts this idle/running cycle; other state behaviour requires a later runtime extension.
+The station runtime accepts this idle/running cycle and an optional `failed` state for interruption, timed repair, and restart.
 Legacy `service_time_distribution` fields are still accepted and wrapped in the same ideal model.
 If both forms are present, their running-time distributions must agree.
 MESServer reads the running-to-idle distribution for its existing service-time calculations.
+It continues to use that nominal distribution when a station also models failure and repair.
+
+`modular_production_system_graph_smp.json` demonstrates the repairable model at workstation 5 (Coordinated Robots).
+The other stations and conveyors retain their original timing and do not fail.
+See [the failure experiment](docs/SMP_FAILURE_EXPERIMENT.md) for its parameters, log schema, and reproducible MES runs.
 
 To accept control from external MES Server, the same graph JSON file which `sim_engine.py` loads should also be copied to and loaded by MES Server. 
 
@@ -88,4 +93,11 @@ Events are appended to a CSV file configured by `OUT_LOG_CSV_FILE` in `sim_engin
 - `service_start` / `service_end`: Service start and completion at stations
 - `transfer_start` / `transfer_end`: Movement over an arc between stations
 - `tray_completed`: A tray has completed (e.g., no next station)
+- `service_interrupted`, `failure_start` / `failure_end`, `service_restart`: An operation fails, waits for repair, and starts a fresh service attempt
+- `smp_initial`, `smp_transition`, `smp_censored`: Initial states, realized local state changes, and unfinished holding times at the observation horizon
+- `mes_action_response` / `mes_routing_response`: Decisions received through the existing MES interface
+
+The five-column production CSV remains available.
+Pass `--out-detail-csv-file PATH` to `sim_engine.py` for a companion CSV with state pairs, realized holding times, operation/attempt identifiers, arc endpoints, and MES response fields.
+Detailed logging errors stop the run so an experiment cannot silently lose its state observations.
 

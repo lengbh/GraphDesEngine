@@ -3,6 +3,7 @@
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import math
+from typing import Any, cast
 
 from random_util import RandomFactory
 
@@ -82,7 +83,7 @@ class SMP:
                 raise ValueError(f"Holding-time sampler has no positive-probability SMP transition: {key!r}")
 
     @classmethod
-    def from_json(cls, model: Mapping) -> 'SMP':
+    def from_json(cls, model: Mapping[str, Any]) -> 'SMP':
         """Load P and F from JSON; a null distribution means external control."""
         required = ("states", "initial_state", "transition_probabilities", "holding_time_distributions")
         if not isinstance(model, Mapping) or any(key not in model for key in required):
@@ -100,6 +101,7 @@ class SMP:
                 else:
                     if not isinstance(distribution, Mapping) or not {"type", "parameters"} <= distribution.keys():
                         raise ValueError(f"Invalid holding-time distribution for SMP transition {(state, target)!r}")
+                    distribution = cast(Mapping[str, Any], distribution)
                     samplers[(state, target)] = RandomFactory.get_random_generator(
                         distribution["type"], distribution["parameters"],
                     )
@@ -113,6 +115,26 @@ class SMP:
                 or self._holding_time_samplers[("idle", "running")] is not None
                 or self._holding_time_samplers[("running", "idle")] is None):
             raise ValueError("Station SMP must start idle, enter running under external control, and return to idle after a sampled holding time")
+
+    def require_station_model(self):
+        """Accept ideal service, or service interrupted by failure and repair.
+
+        A repaired operation restarts in running, retaining its tray and its
+        original MES execute decision. Only running -> idle completes service.
+        """
+        if set(self.states) == {"idle", "running"}:
+            self.require_ideal_machine()
+            return
+        if (set(self.states) != {"idle", "running", "failed"}
+                or self.initial_state != "idle"
+                or self._transitions["idle"][0] != ("running",)
+                or set(self._transitions["running"][0]) != {"idle", "failed"}
+                or self._transitions["failed"][0] != ("running",)
+                or self._holding_time_samplers[("idle", "running")] is not None
+                or any(self._holding_time_samplers[key] is None for key in (
+                    ("running", "idle"), ("running", "failed"), ("failed", "running"),
+                ))):
+            raise ValueError("Station SMP must be idle/running, optionally with timed running -> failed -> running repair and restart")
 
     def get_holding_time_sampler(self, current_state: str, next_state: str) -> Callable[[], float] | None:
         """Expose a conditional sampler for compatibility with existing graph APIs."""

@@ -26,6 +26,7 @@ class VertexSnapshot(TypedDict):
     buffer: list[str]
     in_service: list[str]
     pending_release: list[str]
+    smp_state: str
     x: float
     y: float
 
@@ -84,6 +85,7 @@ class LiveSystemState:
                     "buffer": [],
                     "in_service": [],
                     "pending_release": [],
+                    "smp_state": vertex.smp.initial_state,
                     "x": positions[vertex.id]["x"],
                     "y": positions[vertex.id]["y"],
                 }
@@ -124,11 +126,13 @@ class LiveSystemState:
             vertex_id = event.get("vertex_id")
             vertex = snapshot["vertices"].get(str(vertex_id)) if vertex_id is not None else None
 
-            if event_type == "enqueued" and vertex is not None:
+            if event_type in ("smp_initial", "smp_transition", "smp_censored") and vertex is not None:
+                vertex["smp_state"] = str(event["state_to"])
+            elif event_type == "enqueued" and vertex is not None:
                 self._append_unique(vertex["buffer"], tray_id)
             elif event_type == "dequeued" and vertex is not None:
                 self._remove_if_present(vertex["buffer"], tray_id)
-            elif event_type == "service_start" and vertex is not None:
+            elif event_type in ("service_start", "service_restart") and vertex is not None:
                 self._remove_if_present(vertex["pending_release"], tray_id)
                 self._append_unique(vertex["in_service"], tray_id)
             elif event_type == "service_end" and vertex is not None:
@@ -385,7 +389,7 @@ def build_html() -> str:
 
       const vertexNodes = vertices.map(vertex => {
         const bufferSummary = vertex.buffer.length ? vertex.buffer.join(", ") : "empty";
-        const serviceSummary = vertex.in_service.length ? vertex.in_service.join(", ") : "idle";
+        const serviceSummary = `${vertex.smp_state}: ${vertex.in_service.join(", ") || "none"}`;
         const pendingSummary = vertex.pending_release.length ? vertex.pending_release.join(", ") : "none";
         return `
           <g>
@@ -410,7 +414,7 @@ def build_html() -> str:
           <div class="station-title">${escapeHtml(`S${vertex.id} ${vertex.name}`)}</div>
           <div>Buffer (${vertex.buffer.length}/${vertex.buffer_capacity})</div>
           ${renderChips(vertex.buffer, "buffer")}
-          <div style="margin-top:8px;">In Service (${vertex.in_service.length})</div>
+          <div style="margin-top:8px;">State: ${escapeHtml(vertex.smp_state)} · In Service (${vertex.in_service.length})</div>
           ${renderChips(vertex.in_service, "service")}
           <div style="margin-top:8px;">Pending Release (${vertex.pending_release.length})</div>
           ${renderChips(vertex.pending_release, "pending")}
@@ -484,6 +488,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def run_simulation(args: argparse.Namespace, live_state: LiveSystemState):
+    if args.seed is not None:
+        RandomFactory.set_seed(args.seed)
+
     with open(args.graph_model_file, "r", encoding="utf-8") as handle:
         graph_json = json.load(handle)
     graph = LabelledGraph("System Graph", graph_json)
@@ -492,9 +499,6 @@ def run_simulation(args: argparse.Namespace, live_state: LiveSystemState):
     os.makedirs(out_dir, exist_ok=True)
     if os.path.exists(args.out_log_csv_file):
         os.remove(args.out_log_csv_file)
-
-    if args.seed is not None:
-        RandomFactory.set_seed(args.seed)
 
     env = simpy.RealtimeEnvironment(factor=args.factor, strict=False)
     sim = GraphSimulation(

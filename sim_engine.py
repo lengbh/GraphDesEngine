@@ -27,6 +27,14 @@ CSV_FIELDS = [
     'activity',
 ]
 
+# The original five-column log remains compatible with existing analysis tools.
+# This optional companion preserves the local state sequence and MES decisions.
+DETAIL_CSV_FIELDS = CSV_FIELDS + [
+    'event_index', 'resource_type', 'resource_id', 'state_from', 'state_to',
+    'state_entered_at', 'holding_time', 'service_id', 'service_attempt',
+    'tail', 'head', 'action', 'next_station_id',
+]
+
 
 @dataclass
 class Workpiece:
@@ -48,7 +56,7 @@ class VertexRuntime:
     - an input buffer (`buffer`)
     - a free-slot counter for that buffer (`free_slots`)
     - a service resource (`server`)
-    - an ideal idle/running SMP for service timing (`smp`, `smp_state`)
+    - a local service SMP, optionally including failure and repair
 
     Under BAS (blocking-after-service), a finished tray may not be released
     until the downstream station has a reserved input-buffer slot.
@@ -91,6 +99,8 @@ class VertexRuntime:
         self.server = simpy.Resource(env, capacity=1)
         self.smp = vertex.smp
         self.smp_state = self.smp.initial_state
+        self.state_entered_at = float(env.now)
+        self.service_number = 0
         self.emit_event = emit_event
         self.reserve_buffer_slot = reserve_buffer_slot
         self.release_buffer_slot = release_buffer_slot
@@ -117,6 +127,13 @@ class VertexRuntime:
                 raise RuntimeError(f"No valid action response for station {self.vertex.id}, tray {tray.id}")
             tray.current_workpiece_id = order_id
 
+            if self.mes_control_mode:
+                self.emit_event({
+                    'type': 'mes_action_response', 't': self.env.now,
+                    'vertex_id': self.vertex.id, 'tray_id': tray.id,
+                    'workpiece_id': order_id, 'action': action, 'next_station_id': next_v,
+                })
+
             if action == 0:
                 yield self.env.process(self._dispatch_to_next_vertex(next_v, tray))
                 continue
@@ -133,37 +150,72 @@ class VertexRuntime:
             if order_id is None or action is None or next_v is None:
                 raise RuntimeError(f"No valid routing response for station {self.vertex.id}, tray {tray.id}")
             tray.current_workpiece_id = order_id
+            if self.mes_control_mode:
+                self.emit_event({
+                    'type': 'mes_routing_response', 't': self.env.now,
+                    'vertex_id': self.vertex.id, 'tray_id': tray.id,
+                    'workpiece_id': order_id, 'action': action, 'next_station_id': next_v,
+                })
             assert action == 0
             yield self.env.process(self._dispatch_to_next_vertex(next_v, tray))
 
     def _service_tray(self, tray: Tray):
         with self.server.request() as req:
             yield req
-            # The existing action decision enables idle -> running.
+            self.service_number += 1
+            service_id = f'S{self.vertex.id}-{self.service_number}'
+            attempt = 1
+            # One MES execute decision covers this operation, including retries.
             start_transition = self.smp.sample_transition(self.smp_state)
-            self.smp_state = start_transition.next_state
-            completion_transition = self.smp.sample_transition(self.smp_state)
-            service_time = completion_transition.holding_time
-            if service_time is None:
-                raise RuntimeError("The running state requires a timed completion transition")
-            self.emit_event({
-                'type': 'service_start',
-                't': self.env.now,
-                'vertex_id': self.vertex.id,
-                'tray_id': tray.id,
-                'workpiece_id': tray.current_workpiece_id,
-                'service_time': service_time,
-            })
-            yield self.env.timeout(service_time)
-            # Processing completion does not decide when the tray is released.
-            self.smp_state = completion_transition.next_state
-            self.emit_event({
-                'type': 'service_end',
-                't': self.env.now,
-                'vertex_id': self.vertex.id,
-                'tray_id': tray.id,
-                'workpiece_id': tray.current_workpiece_id,
-            })
+            self._change_state(start_transition.next_state, tray, service_id, attempt)
+            while True:
+                transition = self.smp.sample_transition(self.smp_state)
+                if transition.holding_time is None:
+                    raise RuntimeError("Running and failed states require timed transitions")
+                context = {
+                    'vertex_id': self.vertex.id, 'tray_id': tray.id,
+                    'workpiece_id': tray.current_workpiece_id,
+                    'service_id': service_id, 'service_attempt': attempt,
+                }
+                self.emit_event({
+                    **context, 'type': 'service_start' if attempt == 1 else 'service_restart',
+                    't': self.env.now, 'service_time': transition.holding_time,
+                })
+                yield self.env.timeout(transition.holding_time)
+                self._change_state(transition.next_state, tray, service_id, attempt)
+                if self.smp_state == 'idle':
+                    # Only successful completion is reported to MES by _worker.
+                    self.emit_event({**context, 'type': 'service_end', 't': self.env.now})
+                    return
+
+                self.emit_event({**context, 'type': 'service_interrupted', 't': self.env.now})
+                self.emit_event({**context, 'type': 'failure_start', 't': self.env.now})
+                repair = self.smp.sample_transition(self.smp_state)
+                if repair.holding_time is None:
+                    raise RuntimeError("The failed state requires a timed repair transition")
+                # Hold both the tray and station resource throughout repair.
+                yield self.env.timeout(repair.holding_time)
+                attempt += 1
+                self._change_state(repair.next_state, tray, service_id, attempt)
+                self.emit_event({
+                    **context, 'type': 'failure_end', 't': self.env.now,
+                    'holding_time': repair.holding_time,
+                })
+                # Sample a fresh running attempt; interrupted work is discarded.
+
+    def _change_state(self, next_state: str, tray: Tray, service_id: str, attempt: int):
+        previous_state = self.smp_state
+        entered_at = self.state_entered_at
+        self.smp_state = next_state
+        self.state_entered_at = float(self.env.now)
+        self.emit_event({
+            'type': 'smp_transition', 't': self.env.now,
+            'vertex_id': self.vertex.id, 'tray_id': tray.id,
+            'workpiece_id': tray.current_workpiece_id,
+            'state_from': previous_state, 'state_to': next_state,
+            'state_entered_at': entered_at, 'holding_time': float(self.env.now) - entered_at,
+            'service_id': service_id, 'service_attempt': attempt,
+        })
 
     def _complete_tray(self, tray: Tray):
         self.emit_event({
@@ -233,10 +285,14 @@ class GraphSimulation:
 
     def __init__(self, graph: LabelledGraph, env: simpy.Environment, out_log_csv_file: str,
                  mes_control_mode: bool, mes_host: str | None = None, mes_port: int | None = None,
-                 event_listeners: list[Callable[[dict[str, Any]], None]] | None = None):
+                 event_listeners: list[Callable[[dict[str, Any]], None]] | None = None,
+                 out_detail_csv_file: str | None = None):
         self.graph = graph
         self.env = env
         self.out_log_csv_file = out_log_csv_file
+        self.out_detail_csv_file = out_detail_csv_file
+        self._event_index = 0
+        self._states_observed = False
         self.vertices: dict[int, VertexRuntime] = {}
         self._listeners: list[Callable[[dict[str, Any]], None]] = list(event_listeners or [])
         self._next_tray_id = 1
@@ -387,6 +443,8 @@ class GraphSimulation:
     def _emit(self, event: dict[str, Any]):
         normalized_event = dict(event)
         normalized_event.setdefault('t', self.env.now)
+        self._event_index += 1
+        normalized_event['event_index'] = self._event_index
 
         if normalized_event.get('type') == 'tray_completed':
             tray_id = normalized_event.get('tray_id')
@@ -399,17 +457,17 @@ class GraphSimulation:
             except Exception as e:
                 print(f"[emit] Event listener error ignored: {e}")
 
+        row = {
+                'time': normalized_event.get('t', ""),
+                'station_id': 'S' + str(normalized_event.get('vertex_id', normalized_event.get('tail', ""))),
+                'tray_id': 'T' + str(normalized_event['tray_id']) if 'tray_id' in normalized_event else '',
+                'workpiece_id': 'P' + str(normalized_event['workpiece_id']) if 'workpiece_id' in normalized_event else '',
+                'activity': normalized_event.get('type', ""),
+        }
         try:
             print(normalized_event)
             file_exists = os.path.exists(self.out_log_csv_file)
             write_header = not file_exists or os.path.getsize(self.out_log_csv_file) == 0
-            row = {
-                'time': normalized_event.get('t', ""),
-                'station_id': 'S' + str(normalized_event.get('vertex_id', "") if normalized_event.get('vertex_id', "") is not None else normalized_event.get('tail', "")),
-                'tray_id': 'T' + str(normalized_event.get('tray_id', "")),
-                'workpiece_id': 'P' + str(normalized_event.get('workpiece_id', "")),
-                'activity': normalized_event.get('type', ""),
-            }
             with open(self.out_log_csv_file, mode='a', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
                 if write_header:
@@ -421,8 +479,35 @@ class GraphSimulation:
             except Exception:
                 pass
 
+        # Detailed experiment logging is strict: a failed write must stop the run.
+        if self.out_detail_csv_file is not None:
+            vertex_id = normalized_event.get('vertex_id')
+            tail, head = normalized_event.get('tail'), normalized_event.get('head')
+            detail = {field: normalized_event.get(field, '') for field in DETAIL_CSV_FIELDS}
+            detail.update(row)
+            detail['resource_type'] = 'station' if vertex_id is not None else 'arc'
+            detail['resource_id'] = f'S{vertex_id}' if vertex_id is not None else f'A{tail}_{head}'
+            write_header = not os.path.exists(self.out_detail_csv_file) or os.path.getsize(self.out_detail_csv_file) == 0
+            with open(self.out_detail_csv_file, 'a', newline='', encoding='utf-8') as stream:
+                writer = csv.DictWriter(stream, fieldnames=DETAIL_CSV_FIELDS)
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(detail)
+
     def run(self, until: float | None):
+        if not self._states_observed:
+            self._observe_states('smp_initial')
+            self._states_observed = True
         self.env.run(until=until)
+        self._observe_states('smp_censored')
+
+    def _observe_states(self, activity: str):
+        for vertex_id, runtime in self.vertices.items():
+            self._emit({
+                'type': activity, 't': self.env.now, 'vertex_id': vertex_id,
+                'state_to': runtime.smp_state, 'state_entered_at': runtime.state_entered_at,
+                'holding_time': float(self.env.now) - runtime.state_entered_at,
+            })
 
 
 if __name__ == '__main__':
@@ -431,6 +516,8 @@ if __name__ == '__main__':
                         help='Path to the system graph JSON file.')
     parser.add_argument('-o', '--out-log-csv-file', default=DEFAULT_OUT_LOG_CSV_FILE,
                         help='Path to the output CSV event log file.')
+    parser.add_argument('--out-detail-csv-file',
+                        help='Optional detailed CSV including SMP transitions, holding times and MES decisions.')
     parser.add_argument('-n', '--tray-number', type=int,
                         help='Number of trays to inject at start in non-serial mode.')
     parser.add_argument('-f', '--factor', type=float, default=0,
@@ -449,20 +536,21 @@ if __name__ == '__main__':
                         help='Port for station TCP clients (required when --mes-control-mode).')
     args = parser.parse_args()
 
+    if args.seed is not None:
+        RandomFactory.set_seed(args.seed)
+
     with open(args.graph_model_file, 'r') as f:
         graph_json = json.load(f)
     g = LabelledGraph('System Graph', graph_json)
 
     try:
-        out_dir = os.path.dirname(args.out_log_csv_file) or "."
-        os.makedirs(out_dir, exist_ok=True)
-        if os.path.exists(args.out_log_csv_file):
-            os.remove(args.out_log_csv_file)
+        for log_path in (args.out_log_csv_file, args.out_detail_csv_file):
+            if log_path is not None:
+                os.makedirs(os.path.dirname(log_path) or '.', exist_ok=True)
+                if os.path.exists(log_path):
+                    os.remove(log_path)
     except Exception as e:
         print(f"[setup] Could not prepare log file '{args.out_log_csv_file}': {e}")
-
-    if args.seed is not None:
-        RandomFactory.set_seed(args.seed)
 
     if args.factor == 0:
         env = simpy.Environment()
@@ -482,6 +570,7 @@ if __name__ == '__main__':
         mes_control_mode=args.mes_control_mode,
         mes_host=args.mes_host,
         mes_port=args.mes_port,
+        out_detail_csv_file=args.out_detail_csv_file,
     )
 
     if args.serial:

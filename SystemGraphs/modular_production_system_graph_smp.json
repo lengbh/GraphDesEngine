@@ -82,16 +82,19 @@
       "buffer_capacity": 1,
       "smp": {
         "initial_state": "idle",
-        "states": ["idle", "running"],
+        "states": ["idle", "running", "failed"],
         "transition_probabilities": {
           "idle": {"running": 1.0},
-          "running": {"idle": 1.0}
+          "running": {"idle": 0.97, "failed": 0.03},
+          "failed": {"running": 1.0}
         },
         "holding_time_distributions": {
           "idle": {"running": null},
           "running": {
-            "idle": {"type": "normal", "parameters": [50.40074998140335, 0.0027538093428420576]}
-          }
+            "idle": {"type": "normal", "parameters": [50.40074998140335, 0.0027538093428420576]},
+            "failed": {"type": "uniform", "parameters": [5.0, 40.0]}
+          },
+          "failed": {"running": {"type": "uniform", "parameters": [60.0, 240.0]}}
         }
       }
     },

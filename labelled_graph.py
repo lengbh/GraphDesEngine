@@ -1,13 +1,13 @@
 import argparse
 import json
-from typing import Callable
+from typing import Any, Callable
 from random_util import RandomFactory
 from smp import SMP
 
 GRAPH_MODEL_EXAMPLE_FILE = "graph_model_example.json"
 
 class Vertex:
-    def __init__(self, vertex_json: dict):
+    def __init__(self, vertex_json: dict[str, Any]):
         self.id: int = vertex_json["id"]
         self.name: str = vertex_json["name"]
         self.vertex_role: str = vertex_json.get("vertex_role", "internal")
@@ -16,11 +16,14 @@ class Vertex:
         self.buffer_capacity: int = vertex_json["buffer_capacity"]
         if "smp" in vertex_json:
             self.smp = SMP.from_json(vertex_json["smp"])
-            self.smp.require_ideal_machine()
+            self.smp.require_station_model()
             distribution = vertex_json["smp"]["holding_time_distributions"]["running"]["idle"]
             if "service_time_distribution" in vertex_json and vertex_json["service_time_distribution"] != distribution:
                 raise ValueError(f"Vertex {self.id} has conflicting SMP and legacy service-time distributions")
-            self.service = self.smp.get_holding_time_sampler("running", "idle")
+            sampler = self.smp.get_holding_time_sampler("running", "idle")
+            if sampler is None:
+                raise ValueError("Running-to-idle service requires a holding-time sampler")
+            self.service = sampler
         else:
             distribution = vertex_json["service_time_distribution"]
             self.service = RandomFactory.get_random_generator(distribution["type"], distribution["parameters"])
@@ -35,7 +38,7 @@ class Vertex:
                 f"sample_service_time={self.service()} \n"))
 
 class Arc:
-    def __init__(self, arc_json: dict):
+    def __init__(self, arc_json: dict[str, Any]):
         self.tail: int = arc_json["tail"]
         self.head: int = arc_json["head"]
         self.routing_probability: float = float(arc_json.get("routing_probability", 1.0))
@@ -54,7 +57,7 @@ class Arc:
 
 
 class LabelledGraph:
-    def __init__(self, name: str, graph_json: dict):
+    def __init__(self, name: str, graph_json: dict[str, Any]):
         self.name: str = name
         self.vertices: dict[int, Vertex] = {}
         self.arcs: dict[tuple[int, int], Arc] = {}

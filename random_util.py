@@ -40,13 +40,36 @@ class RandomFactory:
                 cls.set_seed(seed)
             else:
                 cls.get_seed()
-        return cls._rng  # type: ignore[return-value]
+        rng = cls._rng
+        assert rng is not None
+        return rng
 
     @classmethod
     def get_random_generator(cls, time_distribution_type: str, time_distribution_params: list[float], seed: int | None = None) -> Callable[[], float]:
         rng = cls._get_rng(seed)
         dtype = str(time_distribution_type).lower()
         params = list(time_distribution_params)
+
+        if dtype == "empirical":
+            # Equal-mass observations; repeated values retain their frequency.
+            values = np.asarray(params, dtype=float)
+            if values.ndim != 1 or not len(values) or not np.all(np.isfinite(values)) or np.any(values < 0):
+                raise ValueError("Empirical distribution requires finite nonnegative observations")
+            return lambda: float(rng.choice(values))
+
+        if dtype == "uniform_mixture":
+            # A two-component continuous mixture, with P(component 1) = weight.
+            if len(params) != 5 or not all(np.isfinite(value) for value in params):
+                raise ValueError("Uniform mixture requires weight, low1, high1, low2, high2")
+            weight, low1, high1, low2, high2 = params
+            if not (0 <= weight <= 1 and 0 <= low1 <= high1 and 0 <= low2 <= high2):
+                raise ValueError("Invalid uniform mixture weight or interval bounds")
+
+            def sample_mixture() -> float:
+                low, high = (low1, high1) if rng.random() < weight else (low2, high2)
+                return float(rng.uniform(low, high))
+
+            return sample_mixture
 
         if dtype == "uniform":
             if len(params) != 2:
@@ -77,6 +100,16 @@ class RandomFactory:
                 raise ValueError("Triangular distribution requires exactly 3 parameters: left, right, mode")
             left, right, mode = params[0], params[1], params[2]
             return lambda: safe_time(rng.triangular(left, mode, right))
+
+        if dtype == "lognormal":
+            if len(params) != 2:
+                raise ValueError("Lognormal distribution requires exactly 2 parameters: mu and sigma of the underlying normal")
+            mu, sigma = params
+            if not (isinstance(mu, (int, float)) and not isinstance(mu, bool)
+                    and isinstance(sigma, (int, float)) and not isinstance(sigma, bool)
+                    and np.isfinite(mu) and np.isfinite(sigma) and sigma >= 0):
+                raise ValueError("Lognormal requires finite mu and finite nonnegative sigma")
+            return lambda: safe_time(rng.lognormal(mu, sigma))
 
         if dtype == "weibull":
             if len(params) != 2:

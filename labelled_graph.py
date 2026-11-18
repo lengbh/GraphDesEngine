@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 from typing import Any, Callable
 from random_util import RandomFactory
 from smp import SMP
@@ -42,10 +43,39 @@ class Arc:
         self.tail: int = arc_json["tail"]
         self.head: int = arc_json["head"]
         self.routing_probability: float = float(arc_json.get("routing_probability", 1.0))
-        self.transfer_time_distribution_type: str = arc_json["transfer_time_distribution"]["type"]
-        self.transfer_time_distribution_params: list[float] = arc_json["transfer_time_distribution"]["parameters"]
-        self.transfer: Callable[[], float] \
-            = RandomFactory.get_random_generator(self.transfer_time_distribution_type, self.transfer_time_distribution_params)
+        if 'smp' in arc_json:
+            self.smp = SMP.from_json(arc_json['smp'])
+            self.smp.require_ideal_machine()
+            distribution = arc_json['smp']['holding_time_distributions']['running']['idle']
+            if 'transfer_time_distribution' in arc_json and distribution != arc_json['transfer_time_distribution']:
+                raise ValueError(f'Arc {self.tail}->{self.head} has conflicting SMP and legacy transfer-time distributions')
+            sampler = self.smp.get_holding_time_sampler('running', 'idle')
+            if sampler is None:
+                raise ValueError('Conveyor running-to-idle requires a holding-time sampler')
+            self.transfer = sampler
+        else:
+            distribution = arc_json['transfer_time_distribution']
+            self.transfer = RandomFactory.get_random_generator(distribution['type'], distribution['parameters'])
+            self.smp = SMP.ideal_machine(self.transfer)
+        self.transfer_time_distribution_type: str = distribution['type']
+        self.transfer_time_distribution_params: list[float] = distribution['parameters']
+        self.condition_smp: SMP | None = None
+        self.condition_speed_factors: dict[str, float] = {'nominal': 1.0}
+        if 'conveyor_condition' in arc_json:
+            condition = arc_json['conveyor_condition']
+            self.condition_smp = SMP.from_json(condition['smp'])
+            self.condition_speed_factors = {
+                state: float(speed) for state, speed in condition['speed_factors'].items()
+            }
+            if set(self.condition_speed_factors) != set(self.condition_smp.states):
+                raise ValueError('Conveyor speed factors must specify every condition state exactly once')
+            if any(not math.isfinite(speed) or speed < 0
+                   for speed in self.condition_speed_factors.values()):
+                raise ValueError('Conveyor speed factors must be finite and nonnegative')
+            for state, row in condition['smp']['transition_probabilities'].items():
+                for target, probability in row.items():
+                    if probability > 0 and self.condition_smp.get_holding_time_sampler(state, target) is None:
+                        raise ValueError('Conveyor condition transitions require autonomous timed holding times')
 
     def __str__(self):
         return ((f"Arc from {self.tail} to {self.head}, \n"

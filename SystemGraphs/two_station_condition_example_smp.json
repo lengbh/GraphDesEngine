@@ -1,0 +1,157 @@
+{
+  "vertices": [
+    {
+      "id": 1,
+      "name": "Workstation A",
+      "buffer_capacity": 3,
+      "smp": {
+        "initial_state": "idle",
+        "states": [
+          "idle",
+          "running"
+        ],
+        "transition_probabilities": {
+          "idle": {
+            "running": 1.0
+          },
+          "running": {
+            "idle": 1.0
+          }
+        },
+        "holding_time_distributions": {
+          "idle": {
+            "running": null
+          },
+          "running": {
+            "idle": {
+              "type": "triangular",
+              "parameters": [
+                3,
+                8,
+                5
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Workstation B",
+      "buffer_capacity": 3,
+      "smp": {
+        "initial_state": "idle",
+        "states": [
+          "idle",
+          "running",
+          "failed"
+        ],
+        "transition_probabilities": {
+          "idle": {
+            "running": 1.0
+          },
+          "running": {
+            "idle": 0.9,
+            "failed": 0.1
+          },
+          "failed": {
+            "running": 1.0
+          }
+        },
+        "holding_time_distributions": {
+          "idle": {
+            "running": null
+          },
+          "running": {
+            "idle": {
+              "type": "lognormal",
+              "parameters": [
+                1.1,
+                0.2
+              ]
+            },
+            "failed": {
+              "type": "uniform",
+              "parameters": [
+                0.5,
+                1.5
+              ]
+            }
+          },
+          "failed": {
+            "running": {
+              "type": "uniform",
+              "parameters": [
+                2,
+                6
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "arcs": [
+    {
+      "tail": 1,
+      "head": 2,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [
+          12,
+          0.15
+        ]
+      },
+      "conveyor_condition": {
+        "speed_factors": {
+          "nominal": 1.0,
+          "degraded": 0.5
+        },
+        "smp": {
+          "initial_state": "nominal",
+          "states": [
+            "nominal",
+            "degraded"
+          ],
+          "transition_probabilities": {
+            "nominal": {
+              "degraded": 1.0
+            },
+            "degraded": {
+              "nominal": 1.0
+            }
+          },
+          "holding_time_distributions": {
+            "nominal": {
+              "degraded": {
+                "type": "constant",
+                "parameters": [
+                  20
+                ]
+              }
+            },
+            "degraded": {
+              "nominal": {
+                "type": "constant",
+                "parameters": [
+                  10
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "tail": 2,
+      "head": 1,
+      "transfer_time_distribution": {
+        "type": "normal",
+        "parameters": [
+          7,
+          0.1
+        ]
+      }
+    }
+  ]
+}

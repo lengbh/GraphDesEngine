@@ -11,6 +11,7 @@ import simpy
 from simpy.events import Event
 
 from labelled_graph import Vertex, Arc, LabelledGraph
+from conveyor_smp import ConveyorRuntime
 from random_util import RandomFactory
 
 if TYPE_CHECKING:
@@ -33,6 +34,8 @@ DETAIL_CSV_FIELDS = CSV_FIELDS + [
     'event_index', 'resource_type', 'resource_id', 'state_from', 'state_to',
     'state_entered_at', 'holding_time', 'service_id', 'service_attempt',
     'tail', 'head', 'action', 'next_station_id',
+    'transfer_id', 'transfer_time', 'travel_time', 'admission_wait',
+    'speed_factor', 'progress', 'remaining_work', 'condition_state',
 ]
 
 
@@ -75,6 +78,7 @@ class VertexRuntime:
                  release_buffer_slot: Callable[[int], Event],
                  transfer_to_next_vertex: Callable[[int, Tray, bool], Event],
                  emit_event: Callable[[dict[str, Any]], None],
+                 get_conveyor_runtime: Callable[[int, int], ConveyorRuntime],
                  client: 'StationTCPClient | None' = None):
         self.env = env
         self.vertex = vertex
@@ -92,6 +96,7 @@ class VertexRuntime:
             self.request_next_vertex = client.request_routing
 
         self.get_arc_to_next_vertex = get_arc_to_next_vertex
+        self.get_conveyor_runtime = get_conveyor_runtime
         self.buffer = simpy.Store(env, capacity=vertex.buffer_capacity)
         # `free_slots` is the authoritative capacity tracker used by BAS.
         # A slot is reserved before release, then consumed by the actual enqueue.
@@ -233,8 +238,8 @@ class VertexRuntime:
         Once the slot is reserved, the tray is released and physical transport proceeds
         in a separate process while this worker can dequeue the next tray.
         """
-        arc_to_next_vertex = self.get_arc_to_next_vertex(self.vertex.id, next_vertex)
-        transfer_time = arc_to_next_vertex.transfer()
+        conveyor = self.get_conveyor_runtime(self.vertex.id, next_vertex)
+        transfer_time = conveyor.sample_transfer_time()
         yield self.reserve_buffer_slot(next_vertex)
         self.env.process(self._transfer_process(next_vertex, tray, transfer_time, slot_reserved=True))
 
@@ -253,31 +258,19 @@ class VertexRuntime:
         transfer immediately and does not block the station worker on the
         physical transfer duration.
         """
-        arc_to_next_vertex = self.get_arc_to_next_vertex(self.vertex.id, next_vertex)
-        transfer_time = arc_to_next_vertex.transfer()
+        conveyor = self.get_conveyor_runtime(self.vertex.id, next_vertex)
+        transfer_time = conveyor.sample_transfer_time()
         self.env.process(self._transfer_process(next_vertex, tray, transfer_time, slot_reserved=False))
         yield self.env.timeout(0)
 
     def _transfer_process(self, next_vertex: int, tray: Tray, transfer_time: float, slot_reserved: bool):
-        self.emit_event({
-            'type': 'transfer_start',
-            't': self.env.now,
-            'tray_id': tray.id,
-            'workpiece_id': tray.current_workpiece_id,
-            'tail': self.vertex.id,
-            'head': next_vertex,
-            'transfer_time': transfer_time,
-        })
-        yield self.env.timeout(transfer_time)
+        conveyor = self.get_conveyor_runtime(self.vertex.id, next_vertex)
+        transfer = conveyor.begin_transfer(tray.id, tray.current_workpiece_id, transfer_time)
+        yield from conveyor.travel(transfer)
         yield self.transfer_to_next_vertex(next_vertex, tray, slot_reserved)
-        self.emit_event({
-            'type': 'transfer_end',
-            't': self.env.now,
-            'tray_id': tray.id,
-            'workpiece_id': tray.current_workpiece_id,
-            'tail': self.vertex.id,
-            'head': next_vertex,
-        })
+        # Preserve the legacy post-admission tray field: the downstream MES
+        # action may already have assigned a new workpiece to the same tray.
+        conveyor.finish_admission(transfer, workpiece_id=tray.current_workpiece_id)
 
 
 class GraphSimulation:
@@ -298,6 +291,10 @@ class GraphSimulation:
         self._next_tray_id = 1
         self._trays: dict[int, Tray] = {}
         self._completed: list[int] = []
+        self.arcs = {
+            key: ConveyorRuntime(self.env, arc, self._emit)
+            for key, arc in graph.arcs.items()
+        }
 
         self._create_vertex_runtimes(mes_control_mode, mes_host, mes_port)
 
@@ -344,6 +341,7 @@ class GraphSimulation:
             release_buffer_slot=self.release_buffer_slot,
             transfer_to_next_vertex=self.transfer_to_next_vertex,
             emit_event=self._emit,
+            get_conveyor_runtime=lambda tail, head: self.arcs[tail, head],
             client=client,
         )
 
@@ -508,6 +506,8 @@ class GraphSimulation:
                 'state_to': runtime.smp_state, 'state_entered_at': runtime.state_entered_at,
                 'holding_time': float(self.env.now) - runtime.state_entered_at,
             })
+        for runtime in self.arcs.values():
+            runtime.observe('initial' if activity == 'smp_initial' else 'censored')
 
 
 if __name__ == '__main__':
